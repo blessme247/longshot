@@ -1,16 +1,25 @@
 export interface TxLineConfig {
   baseUrl: string;
-  apiKey: string;
+  jwt: string;
+  apiToken: string;
 }
 
-// TODO: confirm base URL and auth scheme against https://txline-docs.txodds.com/documentation/quickstart
-export function loadTxLineConfig(env: Record<string, string | undefined>): TxLineConfig {
-  const baseUrl = env.TXLINE_BASE_URL;
-  const apiKey = env.TXLINE_API_KEY;
+// Every data request needs both credentials per the quickstart:
+// Authorization: Bearer <guest JWT from startGuestSession>, X-Api-Token: <activated API token>.
+export function txLineHeaders(config: TxLineConfig): HeadersInit {
+  return {
+    Authorization: `Bearer ${config.jwt}`,
+    "X-Api-Token": config.apiToken,
+  };
+}
 
-  if (!baseUrl || !apiKey) {
-    throw new Error("TXLINE_BASE_URL and TXLINE_API_KEY must be set");
+export function loadTxLineEnv(env: Record<string, string | undefined>): { baseUrl: string; apiToken: string } {
+  const baseUrl = env.TXLINE_BASE_URL;
+  const apiToken = env.TXLINE_API_TOKEN;
+
+  if (!baseUrl || !apiToken) {
+    throw new Error("TXLINE_BASE_URL and TXLINE_API_TOKEN must be set");
   }
 
-  return { baseUrl, apiKey };
+  return { baseUrl, apiToken };
 }

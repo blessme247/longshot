@@ -2,10 +2,12 @@ export type Outcome = "home" | "draw" | "away";
 
 export interface Fixture {
   id: string;
-  competition: string;
   kickoffAt: string;
   home: string;
   away: string;
+  // Raw TxLINE game-state string from /api/fixtures/snapshot; not yet mapped
+  // to a closed enum since the doc excerpt didn't enumerate its values.
+  gameState: string;
 }
 
 export interface OddsQuote {
@@ -24,12 +26,13 @@ export interface LiveScore {
   observedAt: string;
 }
 
+// App-level settlement record, derived from a verified StatValidationResponse
+// (see clients/settlement.ts) once we implement the proof -> outcome mapping.
 export interface Settlement {
   fixtureId: string;
   market: "90min_result";
   result: Outcome;
   settledAt: string;
-  merkleProof?: string;
 }
 
 export interface ImpliedProbability {

@@ -1,5 +1,7 @@
 export * from "./types";
 export * from "./config";
+export * from "./auth";
+export * from "./stat-keys";
 export * from "./clients/fixtures";
 export * from "./clients/odds";
 export * from "./clients/scores";

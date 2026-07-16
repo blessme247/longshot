@@ -1,15 +1,40 @@
 import type { TxLineConfig } from "../config";
-import type { Settlement } from "../types";
+import { txLineHeaders } from "../config";
 
-// TODO: real endpoint path + Merkle-proof field mapping once quickstart is read
-// (open unknown: does TxLINE expose a proof-verification endpoint, or only the proof itself?)
-export async function getSettlement(config: TxLineConfig, fixtureId: string): Promise<Settlement> {
-  const res = await fetch(`${config.baseUrl}/fixtures/${fixtureId}/settlement`, {
-    headers: { Authorization: `Bearer ${config.apiKey}` },
-  });
+// Docs: https://txline-docs.txodds.com/documentation/examples/onchain-validation
+// GET /api/scores/stat-validation returns the Merkle proof for one or more
+// stats on a fixture, provable against the on-chain daily_scores_roots PDA
+// (["daily_scores_roots", epochDay u16 LE]). `seq` is the score record
+// sequence number and must be >= 1.
+export interface StatValidationRequest {
+  fixtureId: string;
+  seq: number;
+  statKeys: number[];
+}
+
+// Field names are as described in the docs, not yet confirmed against a live
+// response — verify casing once we have an activated API token.
+export interface StatValidationResponse {
+  fixtureId: string;
+  updateCount: number;
+  eventSubtreeRoot: string;
+  proofNodes: Array<{ hash: string; isLeftSibling: boolean }>;
+  statsToProve: Array<{ statKey: number; value: number }>;
+}
+
+export async function getStatValidation(
+  config: TxLineConfig,
+  request: StatValidationRequest,
+): Promise<StatValidationResponse> {
+  const url = new URL(`${config.baseUrl}/api/scores/stat-validation`);
+  url.searchParams.set("fixtureId", request.fixtureId);
+  url.searchParams.set("seq", String(request.seq));
+  url.searchParams.set("statKeys", request.statKeys.join(","));
+
+  const res = await fetch(url, { headers: txLineHeaders(config) });
 
   if (!res.ok) {
-    throw new Error(`TxLINE settlement request failed: ${res.status}`);
+    throw new Error(`TxLINE stat-validation request failed: ${res.status}`);
   }
 
   return res.json();
