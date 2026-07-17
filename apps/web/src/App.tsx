@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { MyPicks } from "@/components/MyPicks";
 import { PickCard } from "@/components/PickCard";
+import { PickCardSkeleton } from "@/components/PickCardSkeleton";
 import { fetchFixtures, fetchPicks, lockPick, type Outcome } from "@/lib/api";
 import { getUserId } from "@/lib/user";
 
@@ -43,7 +44,8 @@ export function App() {
 
       <MyPicks picks={picks.data ?? []} />
 
-      {fixtures.isPending && <p className="text-sm text-neutral-500">Loading fixtures…</p>}
+      {fixtures.isPending &&
+        [0, 1, 2, 3].map((i) => <PickCardSkeleton key={i} />)}
       {fixtures.isError && (
         <p className="text-sm text-red-600">Could not load fixtures. Is the worker running?</p>
       )}

@@ -29,6 +29,14 @@ Core loop:
 - Backend: minimal. Cloudflare Workers (wrangler) preferred for polling TxLINE, snapshotting odds at lock time, settlement processing, and leaderboard storage (KV/D1). Server is the source of truth for locked multipliers — never trust client-supplied odds.
 - Settlement definition: 90-minute result market only for v1.
 
+## Code style
+
+- No code comments unless logic is genuinely non-obvious
+- No console.log in committed code
+- Production-grade error handling on every fetch — no unhandled promise rejections
+- Every user-facing state (loading, error, empty, success) must be designed, not defaulted
+- Always use skeleton loaders that visually matches layout for loading states when ui data is beinf fetched
+
 ## 3-day plan
 - **Day 1:** TxLINE access + quickstart; standalone data package (fixtures, live odds, scores); pick flow UI; odds-snapshot scoring engine.
 - **Day 2:** Wallet connect; on-chain pick commitment; settlement worker against TxLINE settlement feed; leaderboard; "verify this pick" view linking the on-chain proof.
