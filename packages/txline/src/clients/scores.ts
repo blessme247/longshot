@@ -1,38 +1,25 @@
 import type { TxLineConfig } from "../config";
 import { txLineHeaders } from "../config";
+import type { ScoreUpdate } from "../types";
 
-// Docs: https://txline-docs.txodds.com/documentation/scores/overview,
-// https://txline-docs.txodds.com/documentation/examples/streaming-data
-// Confirmed fields on historical score records: seq, ts, gameState (see
-// stat-keys.ts for GAME_PHASE_ENDED). Per-stat values are not enumerated in
-// the doc excerpt, so the payload stays loosely typed until inspected live.
-export interface RawScoreUpdate {
-  seq: number;
-  ts: string;
-  gameState: number;
-  [key: string]: unknown;
-}
+// Returns the score-event history up to asOf (epoch ms) or now. The last
+// entry carries the current Seq (needed for stat-validation) and Score totals.
+export async function getScoresSnapshot(
+  config: TxLineConfig,
+  fixtureId: number,
+  asOf?: number,
+): Promise<ScoreUpdate[]> {
+  const url = new URL(`${config.baseUrl}/api/scores/snapshot/${fixtureId}`);
+  if (asOf !== undefined) url.searchParams.set("asOf", String(asOf));
 
-export async function getScoreSnapshot(config: TxLineConfig, fixtureId: string): Promise<RawScoreUpdate> {
-  const res = await fetch(`${config.baseUrl}/api/scores/snapshot/${fixtureId}`, {
-    headers: txLineHeaders(config),
-  });
-
+  const res = await fetch(url, { headers: txLineHeaders(config) });
   if (!res.ok) {
-    throw new Error(`TxLINE score snapshot request failed: ${res.status}`);
+    throw new Error(`TxLINE scores request failed: ${res.status}`);
   }
 
   return res.json();
 }
 
-export async function getScoreUpdates(config: TxLineConfig, fixtureId: string): Promise<RawScoreUpdate[]> {
-  const res = await fetch(`${config.baseUrl}/api/scores/updates/${fixtureId}`, {
-    headers: txLineHeaders(config),
-  });
-
-  if (!res.ok) {
-    throw new Error(`TxLINE score updates request failed: ${res.status}`);
-  }
-
-  return res.json();
-}
+// {baseUrl}/api/scores/updates/{fixtureId} is an SSE stream
+// (content-type: text/event-stream), not JSON — consume it with an
+// EventSource-style client, same auth headers as above.

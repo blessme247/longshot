@@ -1,23 +1,17 @@
-import type { ImpliedProbability, OddsQuote } from "../types";
+import type { ImpliedProbability, OutcomeOdds } from "../types";
 
 /**
- * Converts a full set of decimal-odds quotes for one market into normalized
- * implied probabilities (overround removed so the set sums to 1).
+ * Converts decimal odds for one market into normalized implied probabilities
+ * (overround removed so the set sums to 1). The TxLINE demargined feed has
+ * overround ~1 already; this keeps the engine correct for any book.
  */
-export function toImpliedProbabilities(quotes: OddsQuote[]): ImpliedProbability[] {
-  if (quotes.length === 0) {
-    throw new Error("toImpliedProbabilities requires at least one quote");
+export function toImpliedProbabilities(odds: OutcomeOdds[]): ImpliedProbability[] {
+  if (odds.length === 0) {
+    throw new Error("toImpliedProbabilities requires at least one entry");
   }
 
-  const raw = quotes.map((quote) => ({
-    outcome: quote.outcome,
-    raw: 1 / quote.decimalOdds,
-  }));
-
+  const raw = odds.map((o) => ({ outcome: o.outcome, raw: 1 / o.decimalOdds }));
   const overround = raw.reduce((sum, { raw: r }) => sum + r, 0);
 
-  return raw.map(({ outcome, raw: r }) => ({
-    outcome,
-    probability: r / overround,
-  }));
+  return raw.map(({ outcome, raw: r }) => ({ outcome, probability: r / overround }));
 }

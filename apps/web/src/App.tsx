@@ -4,9 +4,9 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 const sampleMultipliers = toMultipliers([
-  { fixtureId: "demo", market: "90min_result", outcome: "home", decimalOdds: 1.3, observedAt: new Date().toISOString() },
-  { fixtureId: "demo", market: "90min_result", outcome: "draw", decimalOdds: 4.5, observedAt: new Date().toISOString() },
-  { fixtureId: "demo", market: "90min_result", outcome: "away", decimalOdds: 6.2, observedAt: new Date().toISOString() },
+  { outcome: "home", decimalOdds: 1.3 },
+  { outcome: "draw", decimalOdds: 4.5 },
+  { outcome: "away", decimalOdds: 6.2 },
 ]);
 
 export function App() {

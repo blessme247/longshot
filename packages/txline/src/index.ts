@@ -6,6 +6,8 @@ export * from "./clients/fixtures";
 export * from "./clients/odds";
 export * from "./clients/scores";
 export * from "./clients/settlement";
+export * from "./engine/market";
 export * from "./engine/implied-probability";
 export * from "./engine/multiplier";
+export * from "./engine/score";
 export * from "./engine/line-movement";

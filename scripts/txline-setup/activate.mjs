@@ -206,11 +206,17 @@ if (!activateRes.ok) {
   throw new Error(`token/activate failed: ${activateRes.status} ${await activateRes.text()}`);
 }
 
-const activationBody = await activateRes.json().catch(() => null);
-const apiToken =
-  typeof activationBody === "string" ? activationBody : activationBody?.token;
+// The activation endpoint may return JSON ({ token }) or a plain string.
+const rawActivationBody = await activateRes.text();
+let apiToken;
+try {
+  const parsed = JSON.parse(rawActivationBody);
+  apiToken = typeof parsed === "string" ? parsed : parsed?.token;
+} catch {
+  apiToken = rawActivationBody.trim();
+}
 if (!apiToken) {
-  throw new Error(`Unexpected activation response: ${JSON.stringify(activationBody)}`);
+  throw new Error(`Unexpected activation response: ${rawActivationBody}`);
 }
 
 console.log("\nActivated. Verifying with a fixtures pull...");

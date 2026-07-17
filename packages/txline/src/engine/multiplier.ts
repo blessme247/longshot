@@ -1,24 +1,23 @@
-import type { Multiplier, OddsQuote } from "../types";
+import type { Multiplier, OutcomeOdds } from "../types";
 import { toImpliedProbabilities } from "./implied-probability";
 
 /**
- * Derives the fan-facing points multiplier for each outcome from a set of
- * live decimal-odds quotes. Multiplier is the fair payout (1 / normalized
- * implied probability) for the picked outcome at the moment of the quote.
+ * Derives the fan-facing points multiplier for each outcome: the fair payout
+ * (1 / normalized implied probability) at the moment of the quote.
  */
-export function toMultipliers(quotes: OddsQuote[]): Multiplier[] {
-  const probabilities = toImpliedProbabilities(quotes);
+export function toMultipliers(odds: OutcomeOdds[]): Multiplier[] {
+  const probabilities = toImpliedProbabilities(odds);
   const probabilityByOutcome = new Map(probabilities.map((p) => [p.outcome, p.probability]));
 
-  return quotes.map((quote) => {
-    const probability = probabilityByOutcome.get(quote.outcome);
+  return odds.map((o) => {
+    const probability = probabilityByOutcome.get(o.outcome);
     if (probability === undefined) {
-      throw new Error(`No implied probability computed for outcome ${quote.outcome}`);
+      throw new Error(`No implied probability computed for outcome ${o.outcome}`);
     }
 
     return {
-      outcome: quote.outcome,
-      decimalOdds: quote.decimalOdds,
+      outcome: o.outcome,
+      decimalOdds: o.decimalOdds,
       multiplier: 1 / probability,
     };
   });

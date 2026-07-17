@@ -7,7 +7,7 @@ import { txLineHeaders } from "../config";
 // (["daily_scores_roots", epochDay u16 LE]). `seq` is the score record
 // sequence number and must be >= 1.
 export interface StatValidationRequest {
-  fixtureId: string;
+  fixtureId: number;
   seq: number;
   statKeys: number[];
 }
@@ -15,7 +15,7 @@ export interface StatValidationRequest {
 // Field names are as described in the docs, not yet confirmed against a live
 // response — verify casing once we have an activated API token.
 export interface StatValidationResponse {
-  fixtureId: string;
+  fixtureId: number;
   updateCount: number;
   eventSubtreeRoot: string;
   proofNodes: Array<{ hash: string; isLeftSibling: boolean }>;
@@ -27,7 +27,7 @@ export async function getStatValidation(
   request: StatValidationRequest,
 ): Promise<StatValidationResponse> {
   const url = new URL(`${config.baseUrl}/api/scores/stat-validation`);
-  url.searchParams.set("fixtureId", request.fixtureId);
+  url.searchParams.set("fixtureId", String(request.fixtureId));
   url.searchParams.set("seq", String(request.seq));
   url.searchParams.set("statKeys", request.statKeys.join(","));
 

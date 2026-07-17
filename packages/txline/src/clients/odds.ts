@@ -1,18 +1,18 @@
 import type { TxLineConfig } from "../config";
 import { txLineHeaders } from "../config";
+import type { OddsEntry } from "../types";
 
-// Docs: https://txline-docs.txodds.com/documentation/odds/overview,
-// https://txline-docs.txodds.com/documentation/odds/odds-coverage
-// The docs explicitly warn not to assume market/field names ("SuperOddsType")
-// without inspecting a live response, so this stays untyped until we've hit
-// the endpoint with a real API token and can model the actual payload.
-export type RawOddsSnapshot = unknown;
+// Without asOf the API returns only currently-active odds (empty for
+// finished fixtures); pass an epoch-ms timestamp for a point-in-time view.
+export async function getOddsSnapshot(
+  config: TxLineConfig,
+  fixtureId: number,
+  asOf?: number,
+): Promise<OddsEntry[]> {
+  const url = new URL(`${config.baseUrl}/api/odds/snapshot/${fixtureId}`);
+  if (asOf !== undefined) url.searchParams.set("asOf", String(asOf));
 
-export async function getOddsSnapshot(config: TxLineConfig, fixtureId: string): Promise<RawOddsSnapshot> {
-  const res = await fetch(`${config.baseUrl}/api/odds/snapshot/${fixtureId}`, {
-    headers: txLineHeaders(config),
-  });
-
+  const res = await fetch(url, { headers: txLineHeaders(config) });
   if (!res.ok) {
     throw new Error(`TxLINE odds request failed: ${res.status}`);
   }
@@ -20,20 +20,6 @@ export async function getOddsSnapshot(config: TxLineConfig, fixtureId: string): 
   return res.json();
 }
 
-// epochDay/hourOfDay/interval windowing for historical odds-movement backfill.
-export async function getOddsUpdates(
-  config: TxLineConfig,
-  epochDay: number,
-  hourOfDay: number,
-  interval: number,
-): Promise<RawOddsSnapshot> {
-  const res = await fetch(`${config.baseUrl}/api/odds/updates/${epochDay}/${hourOfDay}/${interval}`, {
-    headers: txLineHeaders(config),
-  });
-
-  if (!res.ok) {
-    throw new Error(`TxLINE odds updates request failed: ${res.status}`);
-  }
-
-  return res.json();
-}
+// Live odds are also available as an SSE stream at {baseUrl}/api/odds/stream
+// (Authorization + X-Api-Token headers, Accept-Encoding: deflate). Consumed
+// by the worker's polling/streaming layer, not modeled here.
