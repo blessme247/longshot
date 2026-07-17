@@ -1,0 +1,16 @@
+{
+  "name": "txline-setup",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "generate-keypair": "node generate-keypair.mjs",
+    "activate": "node activate.mjs"
+  },
+  "dependencies": {
+    "@coral-xyz/anchor": "^0.30.1",
+    "@solana/spl-token": "^0.4.9",
+    "@solana/web3.js": "^1.95.4",
+    "tweetnacl": "^1.0.3"
+  }
+}
