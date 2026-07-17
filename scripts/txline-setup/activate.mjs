@@ -1,110 +1,183 @@
-// Subscribes the ops wallet to TxLINE service level 12 (mainnet, real-time
-// World Cup & Int'l Friendlies, free tier) and activates the API token.
+// Subscribes the ops wallet to the TxLINE free World Cup tier and activates
+// the API token. Mirrors tx-on-chain/examples/devnet/common/users.ts.
 //
-// Requires:
-//   KEYPAIR_PATH  - path to the ops keypair from generate-keypair.mjs (default ./ops-keypair.json)
-//   IDL_PATH      - path to the subscription program's Anchor IDL JSON (no default - required)
-//   TXLINE_BASE_URL - default https://txline.txodds.com
-//   RPC_URL       - default https://api.mainnet-beta.solana.com
+// NETWORK=devnet (default)  -> service level 1, devnet program/mint
+// NETWORK=mainnet           -> service level 12 (real-time), mainnet program/mint
 //
-// Run: npm install && npm run activate -- --yes
-// Without --yes, this only prints the derived accounts and current SOL balance
-// (dry run) — it does not build or send the transaction.
+// Env:
+//   KEYPAIR_PATH - ops keypair path (default ./ops-keypair.json)
+//   IDL_PATH     - Anchor IDL JSON (default ./txoracle.json, vendored)
+//   RPC_URL      - override the default public RPC for the network
+//
+// Run: npm run activate            (dry run: pre-flight checks only)
+//      npm run activate -- --yes   (send the subscribe tx and activate)
 import {
   Connection,
   Keypair,
   PublicKey,
   SystemProgram,
+  Transaction,
+  sendAndConfirmTransaction,
 } from "@solana/web3.js";
 import {
   ASSOCIATED_TOKEN_PROGRAM_ID,
   TOKEN_2022_PROGRAM_ID,
+  createAssociatedTokenAccountInstruction,
   getAssociatedTokenAddressSync,
 } from "@solana/spl-token";
 import { AnchorProvider, Program, Wallet } from "@coral-xyz/anchor";
 import nacl from "tweetnacl";
 import fs from "node:fs";
 
-const PROGRAM_ID = new PublicKey("9ExbZjAapQww1vfcisDmrngPinHTEfpjYRWMunJgcKaA");
-const TXL_TOKEN_MINT = new PublicKey("Zhw9TVKp68a1QrftncMSd6ELXKDtpVMNuMGr1jNwdeL");
+const NETWORKS = {
+  devnet: {
+    programId: "6pW64gN1s2uqjHkn1unFeEjAwJkPGHoppGvS715wyP2J",
+    txlTokenMint: "4Zao8ocPhmMgq7PdsYWyxvqySMGx7xb9cMftPMkEokRG",
+    rpcUrl: "https://api.devnet.solana.com",
+    host: "https://txline-dev.txodds.com",
+    serviceLevelId: 1,
+  },
+  mainnet: {
+    programId: "9ExbZjAapQww1vfcisDmrngPinHTEfpjYRWMunJgcKaA",
+    txlTokenMint: "Zhw9TVKp68a1QrftncMSd6ELXKDtpVMNuMGr1jNwdeL",
+    rpcUrl: "https://api.mainnet-beta.solana.com",
+    host: "https://txline.txodds.com",
+    serviceLevelId: 12, // real-time World Cup & Int'l Friendlies, free
+  },
+};
 
-const SERVICE_LEVEL_ID = 12; // real-time World Cup & Int'l Friendlies, mainnet, free
-const DURATION_WEEKS = 4; // minimum term
+const network = process.env.NETWORK ?? "devnet";
+const net = NETWORKS[network];
+if (!net) {
+  console.error(`NETWORK must be devnet or mainnet, got: ${network}`);
+  process.exit(1);
+}
+
+const DURATION_WEEKS = 4; // must be a multiple of 4
 const SELECTED_LEAGUES = []; // standard free bundle
 
 const KEYPAIR_PATH = process.env.KEYPAIR_PATH ?? "./ops-keypair.json";
-const IDL_PATH = process.env.IDL_PATH;
-const TXLINE_BASE_URL = process.env.TXLINE_BASE_URL ?? "https://txline.txodds.com";
-const RPC_URL = process.env.RPC_URL ?? "https://api.mainnet-beta.solana.com";
+const IDL_PATH = process.env.IDL_PATH ?? "./txoracle.json";
+const RPC_URL = process.env.RPC_URL ?? net.rpcUrl;
 const DRY_RUN = !process.argv.includes("--yes");
 
-if (!IDL_PATH) {
-  console.error("Set IDL_PATH to the subscription program's Anchor IDL JSON file.");
-  process.exit(1);
-}
 if (!fs.existsSync(KEYPAIR_PATH)) {
   console.error(`No keypair at ${KEYPAIR_PATH}. Run generate-keypair.mjs first.`);
   process.exit(1);
 }
+if (!fs.existsSync(IDL_PATH)) {
+  console.error(`No IDL at ${IDL_PATH}.`);
+  process.exit(1);
+}
 
-const secretKey = Uint8Array.from(JSON.parse(fs.readFileSync(KEYPAIR_PATH, "utf8")));
-const opsKeypair = Keypair.fromSecretKey(secretKey);
+const opsKeypair = Keypair.fromSecretKey(
+  Uint8Array.from(JSON.parse(fs.readFileSync(KEYPAIR_PATH, "utf8"))),
+);
 const idl = JSON.parse(fs.readFileSync(IDL_PATH, "utf8"));
 
-const connection = new Connection(RPC_URL, "confirmed");
-const wallet = new Wallet(opsKeypair);
-const provider = new AnchorProvider(connection, wallet, { commitment: "confirmed" });
-const program = new Program(idl, PROGRAM_ID, provider);
+// The vendored IDL embeds the devnet address; patch it for the selected
+// network and fail loudly on any mismatch.
+idl.address = net.programId;
+const programId = new PublicKey(net.programId);
+const txlTokenMint = new PublicKey(net.txlTokenMint);
 
-const [tokenTreasuryPda] = PublicKey.findProgramAddressSync(
-  [Buffer.from("token_treasury_v2")],
-  PROGRAM_ID,
-);
+const connection = new Connection(RPC_URL, "confirmed");
+const provider = new AnchorProvider(connection, new Wallet(opsKeypair), {
+  commitment: "confirmed",
+});
+const program = new Program(idl, provider);
+
+if (!program.programId.equals(programId)) {
+  console.error(
+    `Program ID mismatch: IDL resolved to ${program.programId.toBase58()}, expected ${programId.toBase58()}`,
+  );
+  process.exit(1);
+}
+
 const [pricingMatrixPda] = PublicKey.findProgramAddressSync(
   [Buffer.from("pricing_matrix")],
-  PROGRAM_ID,
+  programId,
+);
+const [tokenTreasuryPda] = PublicKey.findProgramAddressSync(
+  [Buffer.from("token_treasury_v2")],
+  programId,
 );
 const tokenTreasuryVault = getAssociatedTokenAddressSync(
-  TXL_TOKEN_MINT,
+  txlTokenMint,
   tokenTreasuryPda,
   true,
   TOKEN_2022_PROGRAM_ID,
-  ASSOCIATED_TOKEN_PROGRAM_ID,
 );
 const userTokenAccount = getAssociatedTokenAddressSync(
-  TXL_TOKEN_MINT,
+  txlTokenMint,
   opsKeypair.publicKey,
   false,
   TOKEN_2022_PROGRAM_ID,
-  ASSOCIATED_TOKEN_PROGRAM_ID,
 );
 
-const balanceLamports = await connection.getBalance(opsKeypair.publicKey);
-
+console.log(`Network: ${network}`);
 console.log("Ops wallet:", opsKeypair.publicKey.toBase58());
+const balanceLamports = await connection.getBalance(opsKeypair.publicKey);
 console.log("SOL balance:", balanceLamports / 1e9);
-console.log("tokenTreasuryPda:", tokenTreasuryPda.toBase58());
-console.log("pricingMatrixPda:", pricingMatrixPda.toBase58());
-console.log("tokenTreasuryVault:", tokenTreasuryVault.toBase58());
-console.log("userTokenAccount:", userTokenAccount.toBase58());
-console.log("Service level:", SERVICE_LEVEL_ID, "Duration weeks:", DURATION_WEEKS);
+console.log("Program:", programId.toBase58());
+console.log("Service level:", net.serviceLevelId, "weeks:", DURATION_WEEKS);
+
+// Pre-flight: confirm the requested service level exists in the on-chain
+// pricing matrix before spending anything.
+const matrix = await program.account.pricingMatrix.fetch(pricingMatrixPda);
+console.log("\nPricing matrix (rowId, tokens/week, sampling sec):");
+for (const row of matrix.rows) {
+  console.log(`  ${row.rowId}  ${row.pricePerWeekToken}  ${row.samplingIntervalSec}`);
+}
+const levelRow = matrix.rows.find((row) => Number(row.rowId) === net.serviceLevelId);
+if (!levelRow) {
+  console.error(`Service level ${net.serviceLevelId} not found in the on-chain pricing matrix.`);
+  process.exit(1);
+}
+if (Number(levelRow.pricePerWeekToken) !== 0) {
+  console.error(
+    `Service level ${net.serviceLevelId} is not free (price/week: ${levelRow.pricePerWeekToken}). Aborting.`,
+  );
+  process.exit(1);
+}
+console.log(`\nService level ${net.serviceLevelId} confirmed free on-chain.`);
 
 if (DRY_RUN) {
-  console.log("\nDry run only — no transaction sent. Re-run with --yes to subscribe for real.");
+  console.log("\nDry run only — no transaction sent. Re-run with --yes to subscribe.");
   process.exit(0);
 }
 
 if (balanceLamports === 0) {
-  console.error("Ops wallet has 0 SOL — fund it before subscribing.");
+  console.error("Ops wallet has 0 SOL — fund it first.");
   process.exit(1);
 }
 
+// The subscribe instruction requires the user's Token-2022 ATA for the TxL
+// mint to exist, even on free tiers.
+const ataInfo = await connection.getAccountInfo(userTokenAccount);
+if (!ataInfo) {
+  console.log("Creating user Token-2022 account for the TxL mint...");
+  const tx = new Transaction().add(
+    createAssociatedTokenAccountInstruction(
+      opsKeypair.publicKey,
+      userTokenAccount,
+      opsKeypair.publicKey,
+      txlTokenMint,
+      TOKEN_2022_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID,
+    ),
+  );
+  await sendAndConfirmTransaction(connection, tx, [opsKeypair], { commitment: "confirmed" });
+  console.log("Token account created.");
+}
+
+console.log("Subscribing on-chain...");
 const txSig = await program.methods
-  .subscribe(SERVICE_LEVEL_ID, DURATION_WEEKS)
+  .subscribe(net.serviceLevelId, DURATION_WEEKS)
   .accounts({
     user: opsKeypair.publicKey,
     pricingMatrix: pricingMatrixPda,
-    tokenMint: TXL_TOKEN_MINT,
+    tokenMint: txlTokenMint,
     userTokenAccount,
     tokenTreasuryVault,
     tokenTreasuryPda,
@@ -113,30 +186,39 @@ const txSig = await program.methods
     systemProgram: SystemProgram.programId,
   })
   .rpc();
-
 console.log("Subscribe tx confirmed:", txSig);
 
-const authRes = await fetch(`${TXLINE_BASE_URL}/auth/guest/start`, { method: "POST" });
+const authRes = await fetch(`${net.host}/auth/guest/start`, { method: "POST" });
 if (!authRes.ok) throw new Error(`guest/start failed: ${authRes.status}`);
 const { token: jwt } = await authRes.json();
 
 const message = `${txSig}:${SELECTED_LEAGUES.join(",")}:${jwt}`;
-const signature = nacl.sign.detached(Buffer.from(message), opsKeypair.secretKey);
-const walletSignature = Buffer.from(signature).toString("base64");
+const walletSignature = Buffer.from(
+  nacl.sign.detached(new TextEncoder().encode(message), opsKeypair.secretKey),
+).toString("base64");
 
-const activateRes = await fetch(`${TXLINE_BASE_URL}/api/token/activate`, {
+const activateRes = await fetch(`${net.host}/api/token/activate`, {
   method: "POST",
-  headers: {
-    Authorization: `Bearer ${jwt}`,
-    "Content-Type": "application/json",
-  },
+  headers: { Authorization: `Bearer ${jwt}`, "Content-Type": "application/json" },
   body: JSON.stringify({ txSig, walletSignature, leagues: SELECTED_LEAGUES }),
 });
-
 if (!activateRes.ok) {
   throw new Error(`token/activate failed: ${activateRes.status} ${await activateRes.text()}`);
 }
 
-const { apiToken } = await activateRes.json();
-console.log("\nActivated. Set this in your worker/app env:");
-console.log("***REMOVED***);
+const activationBody = await activateRes.json().catch(() => null);
+const apiToken =
+  typeof activationBody === "string" ? activationBody : activationBody?.token;
+if (!apiToken) {
+  throw new Error(`Unexpected activation response: ${JSON.stringify(activationBody)}`);
+}
+
+console.log("\nActivated. Verifying with a fixtures pull...");
+const verifyRes = await fetch(`${net.host}/api/fixtures/snapshot`, {
+  headers: { Authorization: `Bearer ${jwt}`, "X-Api-Token": apiToken },
+});
+console.log("Fixtures snapshot status:", verifyRes.status);
+
+console.log("\nSet these in your worker/app env:");
+console.log(`***REMOVED***`);
+console.log(`***REMOVED***`);

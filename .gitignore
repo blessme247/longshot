@@ -9,5 +9,4 @@ dist
 .vscode/*
 !.vscode/extensions.json
 scripts/txline-setup/ops-keypair.json
-scripts/txline-setup/*.idl.json
-scripts/txline-setup/txoracle.json
+*keypair*.json
