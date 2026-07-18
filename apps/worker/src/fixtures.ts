@@ -82,7 +82,10 @@ export async function listFixtures(config: TxLineConfig): Promise<ApiFixture[]> 
     ...settled.map((f) => toApiFixture(config, f, true)),
   ]);
 
-  return results.filter((f) => f.multipliers !== null);
+  // Upcoming fixtures without a quoted market are kept (UI shows a
+  // "market opens closer to kickoff" state); settled ones without odds
+  // have nothing to replay and are dropped.
+  return results.filter((f) => f.multipliers !== null || !f.demo);
 }
 
 export async function getFixtureById(

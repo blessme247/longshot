@@ -1,3 +1,48 @@
+@import "@fontsource/inter/400.css";
+@import "@fontsource/inter/500.css";
+@import "@fontsource/inter/600.css";
+@import "@fontsource/barlow-condensed/600.css";
+@import "@fontsource/barlow-condensed/700.css";
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+:root {
+  --pitch: #0a0f0c;
+  --surface: #101612;
+  --surface-raised: #161d18;
+  --line: #1e2822;
+  --line-bright: #2c382f;
+  --ink: #e8ede9;
+  --ink-muted: #8a948c;
+  --ink-faint: #58635b;
+  --gold: #f5b841;
+  --gold-glow: rgba(245, 184, 65, 0.28);
+  --cool: #9fb0c0;
+  --win: #57d98a;
+  --win-muted: #3a7d56;
+  --loss: #f0564f;
+  --loss-muted: #8f4642;
+  --live: #f0564f;
+}
+
+body {
+  @apply bg-pitch text-ink antialiased;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .live-dot {
+    animation: live-pulse 2s ease-in-out infinite;
+  }
+}
+
+@keyframes live-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
