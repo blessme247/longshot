@@ -3,6 +3,7 @@ import nacl from "tweetnacl";
 
 import type { Env } from "./env";
 import { isWalletIdentity } from "./identity";
+import { readBoardRows, writeBoardRows } from "./settle";
 import { issueSession } from "./session";
 
 const NONCE_TTL_SECONDS = 300;
@@ -77,6 +78,18 @@ export async function linkGuest(
     guestIds.push(guestId);
     await env.PICKS.put(`linkw:${pubkey}`, JSON.stringify(guestIds));
   }
+
+  // Links created after a settlement re-stamp the guest's board rows so the
+  // board (which resolves display identity at write time) folds them in.
+  const rows = await readBoardRows(env);
+  let changed = false;
+  for (const row of rows) {
+    if (row.identity === guestId && row.displayIdentity !== pubkey) {
+      row.displayIdentity = pubkey;
+      changed = true;
+    }
+  }
+  if (changed) await writeBoardRows(env, rows);
 
   return { linked: true };
 }

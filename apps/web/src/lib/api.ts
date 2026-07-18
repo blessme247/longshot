@@ -113,3 +113,14 @@ export function linkGuest(guestId: string): Promise<{ linked: true }> {
 export function fetchProof(fixtureId: number, identity: string): Promise<ApiProof> {
   return request(`/api/proof?fixtureId=${fixtureId}&identity=${encodeURIComponent(identity)}`);
 }
+
+export interface LeaderboardEntry {
+  identity: string;
+  points: number;
+  won: number;
+  played: number;
+}
+
+export function fetchLeaderboard(): Promise<LeaderboardEntry[]> {
+  return request("/api/leaderboard");
+}

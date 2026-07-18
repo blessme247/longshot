@@ -114,22 +114,44 @@ async function creditPick(env: Env, pick: Pick, result: Outcome): Promise<Leader
 
 // The public board is one composite key (single GET to serve, zero lists);
 // lb:{identity} records stay the per-identity crediting source of truth.
+// Rows are keyed by raw identity with the link-resolved display identity
+// stamped at settlement time (and re-stamped by linkGuest on late links),
+// so serving the board never aggregates KV keys per request.
+export interface BoardRow {
+  identity: string;
+  displayIdentity: string;
+  points: number;
+  won: number;
+  played: number;
+}
+
+export async function readBoardRows(env: Env): Promise<BoardRow[]> {
+  const raw = await env.PICKS.get(BOARD_KEY);
+  return raw ? JSON.parse(raw) : [];
+}
+
+export async function writeBoardRows(env: Env, rows: BoardRow[]): Promise<void> {
+  await env.PICKS.put(BOARD_KEY, JSON.stringify(rows));
+}
+
 async function mergeBoard(env: Env, updated: LeaderboardRecord[]): Promise<void> {
   if (updated.length === 0) return;
-  const raw = await env.PICKS.get(BOARD_KEY);
-  const rows: LeaderboardEntry[] = raw ? JSON.parse(raw) : [];
+  const rows = await readBoardRows(env);
   const byIdentity = new Map(rows.map((r) => [r.identity, r]));
 
   for (const record of updated) {
+    const linkedWallet = await env.PICKS.get(`link:${record.identity}`);
+    const creditedValues = Object.values(record.credited);
     byIdentity.set(record.identity, {
       identity: record.identity,
+      displayIdentity: linkedWallet ?? record.identity,
       points: record.points,
-      settledPicks: Object.keys(record.credited).length,
+      won: creditedValues.filter((p) => p > 0).length,
+      played: creditedValues.length,
     });
   }
 
-  const merged = [...byIdentity.values()].sort((a, b) => b.points - a.points).slice(0, 100);
-  await env.PICKS.put(BOARD_KEY, JSON.stringify(merged));
+  await writeBoardRows(env, [...byIdentity.values()].slice(0, 200));
 }
 
 // Registry entries are the only work source — no fixture-feed scans, no
@@ -204,24 +226,27 @@ export async function runSettlements(
 export interface LeaderboardEntry {
   identity: string;
   points: number;
-  settledPicks: number;
+  won: number;
+  played: number;
 }
 
-// One GET for the board plus one link lookup per row (reads are cheap on
-// the free tier; lists are not — this endpoint performs zero lists).
-// Linked guests fold into their wallet's row at read time.
+// One KV GET per request, full stop. Rows already carry their resolved
+// display identity; grouping linked guest + wallet rows is pure in-memory.
 export async function leaderboard(env: Env): Promise<LeaderboardEntry[]> {
-  const raw = await env.PICKS.get(BOARD_KEY);
-  const stored: LeaderboardEntry[] = raw ? JSON.parse(raw) : [];
+  const stored = await readBoardRows(env);
 
   const rows = new Map<string, LeaderboardEntry>();
-  for (const entry of stored) {
-    const linkedWallet = await env.PICKS.get(`link:${entry.identity}`);
-    const displayIdentity = linkedWallet ?? entry.identity;
-    const row = rows.get(displayIdentity) ?? { identity: displayIdentity, points: 0, settledPicks: 0 };
-    row.points += entry.points;
-    row.settledPicks += entry.settledPicks;
-    rows.set(displayIdentity, row);
+  for (const row of stored) {
+    const entry = rows.get(row.displayIdentity) ?? {
+      identity: row.displayIdentity,
+      points: 0,
+      won: 0,
+      played: 0,
+    };
+    entry.points += row.points;
+    entry.won += row.won;
+    entry.played += row.played;
+    rows.set(row.displayIdentity, entry);
   }
 
   return [...rows.values()].sort((a, b) => b.points - a.points).slice(0, 50);

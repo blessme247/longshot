@@ -2,6 +2,15 @@
 
 Terse changelog, newest first. One entry per meaningful change: what, why, decisions/tradeoffs.
 
+## 2026-07-18 — Leaderboard UI + won/played (honest status: endpoint pre-existed, page did NOT)
+
+**Did this exist before today?** The `GET /api/leaderboard` endpoint has existed since the settlement work landed (2026-07-18 earlier entry), backed by the `board:v1` composite key. There was **no UI page** — the board's row-reorder animation was deferred twice with "no leaderboard exists yet." Summaries that referenced "the leaderboard" meant the endpoint only. Today closes the gap.
+
+- **Endpoint upgraded:** now returns won/played per row (was points + settledPicks). Board rows store both raw identity and a link-resolved `displayIdentity` stamped at settlement time, so serving the board is one KV GET with pure in-memory grouping (no per-request link lookups, zero lists). `linkGuest` re-stamps existing board rows when a wallet is linked after settling, so late links still fold in.
+- **UI page:** new tab nav (Matches / Leaderboard); ranked list with rank 1 in gold, current identity's row highlighted + "you" tag, truncated wallet / "Guest xxxx" labels, won/played line. Framer Motion `layout` on each row = the settlement reorder animation for the video.
+- **Backfill audit (real, on prod):** no prior settled *real* picks exist. The two existing prod settlement records (18237038, 18241006) are past/replay fixtures whose picks are all `demo:true` — verified each one's flag; `creditedCount: 0`, correctly zero board rows. France–England (tonight) has confirmed `demo:false` picks (e.g. draw @ 4.25, home @ 1.95) and is in the cron registry, so it will be the **first** board population at settlement (~22:50 UTC). Empty board right now is correct, not a bug.
+- Verified locally end-to-end with the new schema: France v Spain 0-2 settled, away pick credited 318 pts (won 1/1), home pick 0 (0/1), re-run idempotent, and a post-settlement guest→wallet link folded the guest's 318 pts under the wallet row. Prod: endpoint returns `[]`, web page deploys and serves.
+
 ## 2026-07-18 — Wallet state-machine + optimistic pick regressions (pre-final fixes)
 
 - **Wallet wedge:** the auto sign-in effect depended on the whole mutation object, so it re-fired on any wallet state change — including mid-disconnect renders with a stale adapter, throwing "signMessage is not a function" and freezing the UI in "Retry sign-in". Now: auto-fire gated on connected + pubkey + callable signMessage + no session + at most once per pubkey per connection (ref-tracked); adapter re-checked at call time inside the mutation; any disconnect (button or wallet-side) resets the machine to idle, clears the session, and returns the button to "Connect wallet". "Retry sign-in" renders only on a genuine failed attempt while still connected (e.g. user rejected the prompt).

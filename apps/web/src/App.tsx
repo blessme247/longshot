@@ -2,12 +2,14 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
 import { AccountChip } from "@/components/AccountChip";
+import { Leaderboard } from "@/components/Leaderboard";
 import { MyPicks } from "@/components/MyPicks";
 import { PickCard } from "@/components/PickCard";
 import { PickCardSkeleton } from "@/components/PickCardSkeleton";
 import { fetchFixtures, fetchPicks, lockPick, type ApiFixture, type ApiPick, type Outcome } from "@/lib/api";
 import { getSession } from "@/lib/auth";
 import { getUserId } from "@/lib/user";
+import { cn } from "@/lib/utils";
 
 interface Nudge {
   team: string;
@@ -46,6 +48,7 @@ export function App() {
   const queryClient = useQueryClient();
   // Bumped by AccountChip on sign-in/out so identity-derived state recomputes.
   const [identityEpoch, setIdentityEpoch] = useState(0);
+  const [view, setView] = useState<"picks" | "board">("picks");
 
   const guestId = getUserId();
   const identity = getSession()?.pubkey ?? guestId;
@@ -157,6 +160,25 @@ export function App() {
         <AccountChip onIdentityChange={() => setIdentityEpoch((e) => e + 1)} />
       </header>
 
+      <nav className="flex gap-1 px-1">
+        {(["picks", "board"] as const).map((tab) => (
+          <button
+            key={tab}
+            onClick={() => setView(tab)}
+            className={cn(
+              "rounded-md px-3 py-1.5 text-[11px] font-semibold uppercase tracking-widest transition-colors",
+              view === tab ? "bg-raised text-ink" : "text-ink-faint hover:text-ink-muted",
+            )}
+          >
+            {tab === "picks" ? "Matches" : "Leaderboard"}
+          </button>
+        ))}
+      </nav>
+
+      {view === "board" && <Leaderboard />}
+
+      {view === "picks" && (
+        <>
       <MyPicks picks={picks.data ?? []} />
 
       {nudge && (
@@ -192,6 +214,8 @@ export function App() {
         />
       )}
       {replays.map(renderCard)}
+        </>
+      )}
     </div>
   );
 }
