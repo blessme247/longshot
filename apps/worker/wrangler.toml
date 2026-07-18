@@ -1,9 +1,15 @@
 name = "underdog-worker"
 main = "src/index.ts"
 compatibility_date = "2026-07-01"
+compatibility_flags = ["nodejs_compat"]
+
+[triggers]
+crons = ["* * * * *"]
 
 [vars]
 TXLINE_BASE_URL = "https://txline.txodds.com"
+RPC_URL = "https://solana-rpc.publicnode.com"
+ALLOWED_ORIGINS = "https://underdog-web.kamigo.workers.dev,http://localhost:5173,http://localhost:5183"
 
 [[kv_namespaces]]
 binding = "PICKS"

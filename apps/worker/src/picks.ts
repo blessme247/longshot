@@ -9,8 +9,10 @@ import {
   type TxLineConfig,
 } from "@underdog/txline";
 
+import { linkedGuestIds } from "./auth";
 import type { Env } from "./env";
 import { getFixtureById } from "./fixtures";
+import { isValidIdentity } from "./identity";
 
 export interface Pick {
   userId: string;
@@ -35,25 +37,29 @@ export interface ApiPick extends Pick {
 }
 
 const BASE_POINTS = 100;
-const OUTCOMES: Outcome[] = ["home", "draw", "away"];
 
-function pickKey(userId: string, fixtureId: number): string {
-  return `pick:${userId}:${fixtureId}`;
+export function pickKey(identity: string, fixtureId: number): string {
+  return `pick:${identity}:${fixtureId}`;
 }
 
-export async function lockPick(
+// Fixture-first index so the commitment job reads one prefix per fixture
+// instead of scanning every identity-first key (KV list is eventually
+// consistent; commit.ts explains the timing this pairs with). Written
+// synchronously with the pick in the same request.
+export function pickIndexKey(fixtureId: number, identity: string): string {
+  return `pickf:${fixtureId}:${identity}`;
+}
+
+export async function upsertPick(
   env: Env,
   config: TxLineConfig,
-  body: { userId: string; fixtureId: number; outcome: Outcome },
+  identity: string,
+  body: { fixtureId: number; outcome: Outcome },
 ): Promise<{ pick: Pick } | { error: string; status: number }> {
-  const { userId, fixtureId, outcome } = body;
-  if (!userId || !Number.isInteger(fixtureId) || !OUTCOMES.includes(outcome)) {
-    return { error: "userId, fixtureId and outcome (home|draw|away) required", status: 400 };
-  }
+  const { fixtureId, outcome } = body;
 
-  const existing = await env.PICKS.get(pickKey(userId, fixtureId));
-  if (existing) {
-    return { error: "pick already locked for this fixture", status: 409 };
+  if (!isValidIdentity(identity)) {
+    return { error: "identity must be a wallet pubkey or guest UUID", status: 400 };
   }
 
   const fixture = await getFixtureById(config, fixtureId);
@@ -61,12 +67,22 @@ export async function lockPick(
     return { error: "unknown fixture", status: 404 };
   }
 
-  // Server-derived, never client-supplied: any pick locked at or after
-  // kickoff is a practice/replay pick and must stay off the real leaderboard.
-  const demo = fixture.StartTime <= Date.now();
+  const kickedOff = fixture.StartTime <= Date.now();
+  const existingRaw = await env.PICKS.get(pickKey(identity, fixtureId));
+  const existing: Pick | null = existingRaw ? JSON.parse(existingRaw) : null;
 
-  // Server-side odds snapshot at lock time is the source of truth — the
-  // client never supplies odds. Demo replays settled fixtures at kickoff.
+  // Real picks freeze at kickoff — this gate is what makes the committed
+  // Merkle leaves immutable. Replay (demo) picks never enter a commitment,
+  // so they stay editable.
+  if (kickedOff && existing && !existing.demo) {
+    return { error: "pick is frozen — fixture has kicked off", status: 409 };
+  }
+
+  const demo = kickedOff;
+
+  // Every create/change re-snapshots odds server-side at this moment; a
+  // stale multiplier is never carried across a change and the client never
+  // supplies odds.
   const odds = await getOddsSnapshot(config, fixtureId, demo ? fixture.StartTime : undefined);
   const market = fullTime1x2(odds, fixture.Participant1IsHome);
   if (!market) {
@@ -79,7 +95,7 @@ export async function lockPick(
   }
 
   const pick: Pick = {
-    userId,
+    userId: identity,
     fixtureId,
     outcome,
     multiplier: Number(multiplier.multiplier.toFixed(2)),
@@ -91,7 +107,11 @@ export async function lockPick(
     kickoffAt: fixture.StartTime,
   };
 
-  await env.PICKS.put(pickKey(userId, fixtureId), JSON.stringify(pick));
+  const json = JSON.stringify(pick);
+  await Promise.all([
+    env.PICKS.put(pickKey(identity, fixtureId), json),
+    env.PICKS.put(pickIndexKey(fixtureId, identity), json),
+  ]);
   return { pick };
 }
 
@@ -124,18 +144,36 @@ async function withStatus(config: TxLineConfig, pick: Pick): Promise<ApiPick> {
   };
 }
 
-export async function listPicks(
-  env: Env,
-  config: TxLineConfig,
-  userId: string,
-): Promise<ApiPick[]> {
-  const listed = await env.PICKS.list({ prefix: `pick:${userId}:` });
+async function picksForIdentity(env: Env, identity: string): Promise<Pick[]> {
+  const listed = await env.PICKS.list({ prefix: `pick:${identity}:` });
   const picks: Pick[] = [];
   for (const key of listed.keys) {
     const raw = await env.PICKS.get(key.name);
     if (raw) picks.push(JSON.parse(raw));
   }
+  return picks;
+}
 
-  const withStatuses = await Promise.all(picks.map((p) => withStatus(config, p)));
+// Authenticated reads merge linked guest picks with the wallet's own
+// (display-only linking — records keep their original identity forever).
+// One pick per fixture in the response; the wallet's own pick wins.
+export async function listPicks(
+  env: Env,
+  config: TxLineConfig,
+  identity: string,
+  includeLinked: boolean,
+): Promise<ApiPick[]> {
+  const identities = includeLinked
+    ? [...(await linkedGuestIds(env, identity)), identity]
+    : [identity];
+
+  const byFixture = new Map<number, Pick>();
+  for (const id of identities) {
+    for (const pick of await picksForIdentity(env, id)) {
+      byFixture.set(pick.fixtureId, pick);
+    }
+  }
+
+  const withStatuses = await Promise.all([...byFixture.values()].map((p) => withStatus(config, p)));
   return withStatuses.sort((a, b) => b.lockedAt - a.lockedAt);
 }

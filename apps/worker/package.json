@@ -10,10 +10,15 @@
     "deploy": "wrangler deploy"
   },
   "dependencies": {
-    "@underdog/txline": "workspace:*"
+    "@solana/web3.js": "^1.98.4",
+    "@underdog/commitment": "workspace:*",
+    "@underdog/txline": "workspace:*",
+    "tweetnacl": "^1.0.3",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20241205.0",
+    "@types/node": "^26.1.1",
     "typescript": "^5.7.0",
     "wrangler": "^4.112.0"
   }

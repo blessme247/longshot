@@ -1,0 +1,276 @@
+import {
+  buildProof,
+  buildRoot,
+  hashLeaf,
+  sortLeafHashes,
+  toHex,
+  type PickLeaf,
+  type ProofStep,
+} from "@underdog/commitment";
+import {
+  WORLD_CUP_COMPETITION_ID,
+  getFixturesSnapshot,
+  type Fixture,
+  type TxLineConfig,
+} from "@underdog/txline";
+import {
+  Connection,
+  Keypair,
+  PublicKey,
+  Transaction,
+  TransactionInstruction,
+} from "@solana/web3.js";
+
+import type { Env } from "./env";
+import type { Pick } from "./picks";
+
+// KV list is eventually consistent (writes can take ~60s to appear in list
+// results from other locations). Committing exactly at kickoff could
+// silently omit picks locked in the final seconds, breaking their proofs
+// forever. The write gate still closes at kickoff exactly (picks.ts); tree
+// construction just waits out the consistency window.
+const COMMIT_DELAY_MS = 3 * 60 * 1000;
+// Wide lookback so cron downtime never permanently skips a fixture; past
+// fixtures can't gain committable picks (demo flag), so re-scanning is free.
+const LOOKBACK_MS = 120 * 3600 * 1000;
+const WORLD_CUP_START_EPOCH_DAY = 20624;
+
+const MEMO_PROGRAM_ID = new PublicKey("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr");
+const MIN_BALANCE_LAMPORTS = 10_000;
+
+export interface CommitmentRecord {
+  version: 1;
+  fixtureId: number;
+  root: string;
+  leafCount: number;
+  status: "pending" | "committed";
+  txSig?: string;
+  slot?: number;
+  committedAt: number;
+}
+
+export function commitmentKey(fixtureId: number): string {
+  return `commitment:${fixtureId}`;
+}
+
+export function toLeaf(pick: Pick): PickLeaf {
+  return {
+    fixtureId: pick.fixtureId,
+    identity: pick.userId,
+    selection: pick.outcome,
+    multiplier: pick.multiplier,
+    lockedAt: pick.lockedAt,
+  };
+}
+
+// Only real picks locked strictly before kickoff enter the tree.
+export function isCommittable(pick: Pick, fixture: { StartTime: number }): boolean {
+  return !pick.demo && pick.lockedAt < fixture.StartTime;
+}
+
+export async function committablePicks(
+  env: Env,
+  fixture: { FixtureId: number; StartTime: number },
+): Promise<Pick[]> {
+  const listed = await env.PICKS.list({ prefix: `pickf:${fixture.FixtureId}:` });
+  const picks: Pick[] = [];
+  for (const key of listed.keys) {
+    const raw = await env.PICKS.get(key.name);
+    if (!raw) continue;
+    const pick: Pick = JSON.parse(raw);
+    if (isCommittable(pick, fixture)) picks.push(pick);
+  }
+  return picks;
+}
+
+async function sortedLeavesFor(picks: Pick[]): Promise<Uint8Array[]> {
+  const hashes = await Promise.all(picks.map((p) => hashLeaf(toLeaf(p))));
+  return sortLeafHashes(hashes);
+}
+
+// Confirmation against public RPC can time out even when the tx lands, so
+// the caller records the txSig immediately after send and re-checks the
+// signature status on later runs before ever re-sending.
+export async function signatureLanded(
+  connection: Connection,
+  txSig: string,
+): Promise<number | null> {
+  const status = await connection.getSignatureStatuses([txSig], {
+    searchTransactionHistory: true,
+  });
+  const value = status.value[0];
+  if (value && !value.err) return value.slot;
+  return null;
+}
+
+async function sendRoot(
+  env: Env,
+  connection: Connection,
+  fixtureId: number,
+  rootHex: string,
+): Promise<string> {
+  const keypair = Keypair.fromSecretKey(Uint8Array.from(JSON.parse(env.OPS_KEYPAIR_JSON)));
+
+  const balance = await connection.getBalance(keypair.publicKey);
+  if (balance < MIN_BALANCE_LAMPORTS) {
+    throw new Error(
+      `OPS WALLET BALANCE TOO LOW: ${balance} lamports at ${keypair.publicKey.toBase58()} — fund it or commitments stop`,
+    );
+  }
+
+  const memo = `underdog:v1:${fixtureId}:${rootHex}`;
+  const tx = new Transaction().add(
+    new TransactionInstruction({
+      keys: [],
+      programId: MEMO_PROGRAM_ID,
+      data: Buffer.from(memo, "utf8"),
+    }),
+  );
+
+  const latest = await connection.getLatestBlockhash("confirmed");
+  tx.recentBlockhash = latest.blockhash;
+  tx.feePayer = keypair.publicKey;
+  tx.sign(keypair);
+
+  return connection.sendRawTransaction(tx.serialize());
+}
+
+export async function runCommitments(env: Env, config: TxLineConfig): Promise<void> {
+  const now = Date.now();
+  const fixtures = await getFixturesSnapshot(config, {
+    competitionId: WORLD_CUP_COMPETITION_ID,
+    startEpochDay: WORLD_CUP_START_EPOCH_DAY,
+  });
+
+  const due = fixtures.filter(
+    (f: Fixture) =>
+      now >= f.StartTime + COMMIT_DELAY_MS && now - f.StartTime < LOOKBACK_MS,
+  );
+
+  for (const fixture of due) {
+    const recordRaw = await env.PICKS.get(commitmentKey(fixture.FixtureId));
+    const record: CommitmentRecord | null = recordRaw ? JSON.parse(recordRaw) : null;
+    if (record?.status === "committed") continue;
+
+    try {
+      const picks = await committablePicks(env, fixture);
+      if (picks.length === 0) {
+        if (!record) {
+          console.log(`commitment: fixture ${fixture.FixtureId} has no committable picks, skipping`);
+        }
+        continue;
+      }
+
+      const root = toHex(await buildRoot(await sortedLeavesFor(picks)));
+
+      // Pending record before sending makes re-runs crash-safe. A pending
+      // record with a txSig means a send went out but confirmation was not
+      // observed — check the chain before ever re-sending.
+      if (record?.status === "pending" && record.root !== root) {
+        console.error(
+          `commitment: fixture ${fixture.FixtureId} pending root mismatch (${record.root} vs ${root}) — picks changed after pending write, investigate`,
+        );
+        continue;
+      }
+
+      const connection = new Connection(env.RPC_URL, "confirmed");
+
+      if (record?.status === "pending" && record.txSig) {
+        const slot = await signatureLanded(connection, record.txSig);
+        if (slot !== null) {
+          await env.PICKS.put(
+            commitmentKey(fixture.FixtureId),
+            JSON.stringify({ ...record, status: "committed", slot }),
+          );
+          console.log(
+            `commitment: fixture ${fixture.FixtureId} recovered — earlier tx ${record.txSig} had landed`,
+          );
+          continue;
+        }
+      }
+
+      const pending: CommitmentRecord = {
+        version: 1,
+        fixtureId: fixture.FixtureId,
+        root,
+        leafCount: picks.length,
+        status: "pending",
+        committedAt: now,
+      };
+      await env.PICKS.put(commitmentKey(fixture.FixtureId), JSON.stringify(pending));
+
+      const txSig = await sendRoot(env, connection, fixture.FixtureId, root);
+      await env.PICKS.put(
+        commitmentKey(fixture.FixtureId),
+        JSON.stringify({ ...pending, txSig }),
+      );
+
+      const slot = await signatureLanded(connection, txSig);
+      if (slot !== null) {
+        await env.PICKS.put(
+          commitmentKey(fixture.FixtureId),
+          JSON.stringify({ ...pending, status: "committed", txSig, slot }),
+        );
+        console.log(`commitment: fixture ${fixture.FixtureId} root ${root} committed in ${txSig}`);
+      } else {
+        console.log(
+          `commitment: fixture ${fixture.FixtureId} sent ${txSig}, confirmation pending — next run will verify`,
+        );
+      }
+    } catch (err) {
+      console.error(`COMMITMENT FAILED for fixture ${fixture.FixtureId}:`, err);
+    }
+  }
+}
+
+export interface ProofResponse {
+  leaf: PickLeaf;
+  leafHash: string;
+  proof: ProofStep[];
+  root: string;
+  leafCount: number;
+  txSig: string | null;
+  explorerUrl: string | null;
+}
+
+export async function buildProofResponse(
+  env: Env,
+  fixture: { FixtureId: number; StartTime: number },
+  identity: string,
+): Promise<ProofResponse | { error: string; status: number }> {
+  const recordRaw = await env.PICKS.get(commitmentKey(fixture.FixtureId));
+  const record: CommitmentRecord | null = recordRaw ? JSON.parse(recordRaw) : null;
+  if (!record) {
+    return { error: "fixture not committed yet", status: 404 };
+  }
+
+  const picks = await committablePicks(env, fixture);
+  const target = picks.find((p) => p.userId === identity);
+  if (!target) {
+    return { error: "no committed pick for this identity", status: 404 };
+  }
+
+  const hashes = await Promise.all(picks.map((p) => hashLeaf(toLeaf(p))));
+  const sorted = sortLeafHashes(hashes);
+  const root = toHex(await buildRoot(sorted));
+  if (root !== record.root) {
+    console.error(
+      `PROOF INTEGRITY ERROR: rebuilt root ${root} does not match committed root ${record.root} for fixture ${fixture.FixtureId}`,
+    );
+    return { error: "stored picks no longer match the committed root", status: 500 };
+  }
+
+  const targetHash = toHex(await hashLeaf(toLeaf(target)));
+  const index = sorted.findIndex((h) => toHex(h) === targetHash);
+  const proof = await buildProof(sorted, index);
+
+  return {
+    leaf: toLeaf(target),
+    leafHash: targetHash,
+    proof,
+    root,
+    leafCount: record.leafCount,
+    txSig: record.txSig ?? null,
+    explorerUrl: record.txSig ? `https://solscan.io/tx/${record.txSig}` : null,
+  };
+}

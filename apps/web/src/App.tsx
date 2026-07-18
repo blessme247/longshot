@@ -1,12 +1,13 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
 
+import { AccountChip } from "@/components/AccountChip";
 import { MyPicks } from "@/components/MyPicks";
 import { PickCard } from "@/components/PickCard";
 import { PickCardSkeleton } from "@/components/PickCardSkeleton";
 import { fetchFixtures, fetchPicks, lockPick, type ApiFixture, type Outcome } from "@/lib/api";
+import { getSession } from "@/lib/auth";
 import { getUserId } from "@/lib/user";
-
-const userId = getUserId();
 
 interface Nudge {
   team: string;
@@ -43,6 +44,11 @@ function SectionHeader({ title, tagline }: { title: string; tagline?: string }) 
 
 export function App() {
   const queryClient = useQueryClient();
+  // Bumped by AccountChip on sign-in/out so identity-derived state recomputes.
+  const [identityEpoch, setIdentityEpoch] = useState(0);
+
+  const guestId = getUserId();
+  const identity = getSession()?.pubkey ?? guestId;
 
   const fixtures = useQuery({
     queryKey: ["fixtures"],
@@ -51,15 +57,15 @@ export function App() {
   });
 
   const picks = useQuery({
-    queryKey: ["picks", userId],
-    queryFn: () => fetchPicks(userId),
+    queryKey: ["picks", identity, identityEpoch],
+    queryFn: () => fetchPicks(guestId),
     refetchInterval: 15_000,
   });
 
   const lock = useMutation({
     mutationFn: (vars: { fixtureId: number; outcome: Outcome }) =>
-      lockPick({ userId, ...vars }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["picks", userId] }),
+      lockPick({ userId: guestId, ...vars }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["picks"] }),
   });
 
   const pickedByFixture = new Map(
@@ -86,13 +92,16 @@ export function App() {
 
   return (
     <div className="mx-auto flex min-h-screen max-w-xl flex-col gap-3 px-3 py-4">
-      <header className="px-1 pt-1">
-        <h1 className="font-condensed text-2xl font-bold uppercase tracking-wide">
-          Under<span className="text-gold">dog</span>
-        </h1>
-        <p className="text-xs text-ink-muted">
-          Pick results, earn more when the underdog hits.
-        </p>
+      <header className="flex items-start justify-between px-1 pt-1">
+        <div>
+          <h1 className="font-condensed text-2xl font-bold uppercase tracking-wide">
+            Under<span className="text-gold">dog</span>
+          </h1>
+          <p className="text-xs text-ink-muted">
+            Pick results, earn more when the underdog hits.
+          </p>
+        </div>
+        <AccountChip onIdentityChange={() => setIdentityEpoch((e) => e + 1)} />
       </header>
 
       <MyPicks picks={picks.data ?? []} />
