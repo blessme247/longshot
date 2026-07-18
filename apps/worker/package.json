@@ -7,7 +7,8 @@
     "dev": "wrangler dev",
     "build": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
-    "deploy": "wrangler deploy"
+    "deploy": "wrangler deploy",
+    "test": "vitest run"
   },
   "dependencies": {
     "@solana/web3.js": "^1.98.4",
@@ -20,6 +21,7 @@
     "@cloudflare/workers-types": "^4.20241205.0",
     "@types/node": "^26.1.1",
     "typescript": "^5.7.0",
+    "vitest": "^4.1.10",
     "wrangler": "^4.112.0"
   }
 }

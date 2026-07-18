@@ -2,6 +2,12 @@
 
 Terse changelog, newest first. One entry per meaningful change: what, why, decisions/tradeoffs.
 
+## 2026-07-18 — Status state machine fix + settlement worker (pre-match deploys for tonight)
+
+- **Status bug (urgent):** pre-match real picks showed "Busted" — pre-match score snapshots contain a fixture-metadata record with no goals, read as 0-0 and compared against the pick. Status is now a pure phase machine (`status.ts`, vitest-covered including the exact regression): pre-kickoff → `locked` (scores never even fetched), live → provisional `hitting`/`busted` (no score yet = genuine 0-0), settled real picks → `won`/`lost` + credited points from the settlement record only, replays → reveal semantics. Verified on prod: France v England pick shows `locked` pre-match.
+- **Settlement worker:** same cron, independent failure domain from commitments (`Promise.allSettled`). Waits for the feed's ended phase (StatusId 5; force-settles loudly on last known score after 4h as a fallback), settles the **90-minute market from H1+H2 goal buckets** so knockout extra time never leaks in (Total includes ET) — draw-at-FT is first-class. Crediting is idempotent per pick via a `credited{fixtureId:points}` map inside each `lb:{identity}` record — the single leaderboard write is the atomic crediting act; pick-record settled flags are display-only and healed by re-runs. Settlement records mirror the `commitment:` pattern. Verified locally against the France v Spain replay: settled 0-2 away matching the real result, winner credited 318 pts (100 × 3.18), loser 0, linked guest folded into its wallet's board row, **re-run changed nothing**. `GET /api/leaderboard` added (linked guests fold in at read).
+- Known test entrants on tonight's board: guest `00000000-dead-…-0001` (draw @ 4.25, prod acceptance check) — plus whatever the real crowd does.
+
 ## 2026-07-18 — Identity + on-chain commitment layer (shipped)
 
 Everything below verified locally end-to-end before deploy: upsert re-snapshots odds; frozen gate 409s; SIWS sign-in with a real ed25519 signature; nonce replay and forged signatures rejected; one-way guest link enforced (409 on relink); commitment cron published a rehearsal root to **mainnet** (memo tx `2Y5mBz…azuB`, fixture 18237038 with seeded test picks, record kept in local KV only) and the served proof re-verified client-side with the shared package. The confirmation-timeout path was exercised for real: a sent-but-unconfirmed tx left a pending record, which motivated storing txSig at send time and checking signature status before any re-send.

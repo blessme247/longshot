@@ -12,12 +12,15 @@ const OUTCOME_LABEL = (pick: ApiPick): string =>
   pick.outcome === "home" ? pick.home : pick.outcome === "away" ? pick.away : "Draw";
 
 function statusStyle(pick: ApiPick): string {
-  const final = pick.demo;
   switch (pick.status) {
+    case "won":
+      return "bg-win/15 text-win";
+    case "lost":
+      return "bg-loss/15 text-loss";
     case "hitting":
-      return final ? "bg-win/15 text-win" : "bg-win-muted/20 text-win-muted";
+      return "bg-win-muted/20 text-win-muted";
     case "busted":
-      return final ? "bg-loss/15 text-loss" : "bg-loss-muted/20 text-loss-muted";
+      return "bg-loss-muted/20 text-loss-muted";
     default:
       return "bg-raised text-ink-muted";
   }
@@ -44,11 +47,18 @@ function StatusChip({ pick }: { pick: ApiPick }) {
 }
 
 function Points({ pick }: { pick: ApiPick }) {
-  const unit = pick.demo ? "practice pts" : "pts";
-  if (pick.status === "hitting" && pick.demo) {
+  // The settlement money moment: credited points count up in gold.
+  if (pick.status === "won" && pick.creditedPoints !== null) {
     return (
       <span className="font-condensed text-base font-bold tabular-nums text-gold">
-        <CountUp to={pick.potentialPoints} /> {unit}
+        <CountUp to={pick.creditedPoints} /> pts won
+      </span>
+    );
+  }
+  if (pick.demo) {
+    return (
+      <span className="text-xs tabular-nums text-ink-muted">
+        {pick.potentialPoints} practice pts
       </span>
     );
   }
@@ -56,10 +66,12 @@ function Points({ pick }: { pick: ApiPick }) {
     <span
       className={cn(
         "text-xs tabular-nums",
-        pick.status === "busted" ? "text-ink-faint line-through" : "text-ink-muted",
+        pick.status === "lost" || pick.status === "busted"
+          ? "text-ink-faint line-through"
+          : "text-ink-muted",
       )}
     >
-      {pick.potentialPoints} {unit}
+      {pick.potentialPoints} pts
     </span>
   );
 }

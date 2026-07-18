@@ -21,7 +21,8 @@ export interface ApiPick {
   home: string;
   away: string;
   kickoffAt: number;
-  status: "pending" | "hitting" | "busted";
+  status: "locked" | "hitting" | "busted" | "won" | "lost";
+  creditedPoints: number | null;
   homeGoals: number | null;
   awayGoals: number | null;
   potentialPoints: number;

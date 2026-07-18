@@ -1,5 +1,6 @@
 import { issueNonce, linkGuest, verifySignIn } from "./auth";
 import { buildProofResponse, commitmentKey, runCommitments } from "./commit";
+import { leaderboard, runSettlements } from "./settle";
 import type { Env } from "./env";
 import { getFixtureById, listFixtures } from "./fixtures";
 import { isGuestIdentity } from "./identity";
@@ -102,6 +103,10 @@ export default {
         return json(picks);
       }
 
+      if (request.method === "GET" && pathname === "/api/leaderboard") {
+        return json(await leaderboard(env));
+      }
+
       if (request.method === "GET" && pathname.startsWith("/api/commitments/")) {
         const fixtureId = Number(pathname.split("/").pop());
         if (!Number.isInteger(fixtureId)) return json({ error: "invalid fixture id" }, 400);
@@ -130,6 +135,15 @@ export default {
   },
 
   async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
-    ctx.waitUntil(withTxLine(env, (config) => runCommitments(env, config)));
+    // Independent failure domains: settlement runs even if commitments fail
+    // and vice versa. Each catches its own per-fixture errors internally.
+    ctx.waitUntil(
+      withTxLine(env, async (config) => {
+        await Promise.allSettled([
+          runCommitments(env, config),
+          runSettlements(env, config),
+        ]);
+      }),
+    );
   },
 };

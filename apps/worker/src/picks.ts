@@ -1,9 +1,7 @@
 import {
-  currentGoals,
   fullTime1x2,
   getOddsSnapshot,
   getScoresSnapshot,
-  resultFromGoals,
   toMultipliers,
   type Outcome,
   type TxLineConfig,
@@ -13,6 +11,8 @@ import { linkedGuestIds } from "./auth";
 import type { Env } from "./env";
 import { getFixtureById } from "./fixtures";
 import { isValidIdentity } from "./identity";
+import { settlementKey, type SettlementRecord } from "./settle";
+import { deriveStatus, pointsFor, type PickStatus } from "./status";
 
 export interface Pick {
   userId: string;
@@ -25,18 +25,17 @@ export interface Pick {
   home: string;
   away: string;
   kickoffAt: number;
+  settled?: boolean;
+  creditedPoints?: number;
 }
 
-export type PickStatus = "pending" | "hitting" | "busted";
-
-export interface ApiPick extends Pick {
+export interface ApiPick extends Omit<Pick, "settled" | "creditedPoints"> {
   status: PickStatus;
   homeGoals: number | null;
   awayGoals: number | null;
   potentialPoints: number;
+  creditedPoints: number | null;
 }
-
-const BASE_POINTS = 100;
 
 export function pickKey(identity: string, fixtureId: number): string {
   return `pick:${identity}:${fixtureId}`;
@@ -115,32 +114,36 @@ export async function upsertPick(
   return { pick };
 }
 
-async function withStatus(config: TxLineConfig, pick: Pick): Promise<ApiPick> {
-  const asOf = pick.demo ? pick.kickoffAt + 3 * 3600 * 1000 : undefined;
+async function withStatus(env: Env, config: TxLineConfig, pick: Pick): Promise<ApiPick> {
+  const now = Date.now();
 
-  let status: PickStatus = "pending";
-  let homeGoals: number | null = null;
-  let awayGoals: number | null = null;
-
-  try {
-    const scores = await getScoresSnapshot(config, pick.fixtureId, asOf);
-    const last = scores.at(-1);
-    if (last) {
-      const goals = currentGoals(last);
-      homeGoals = goals.homeGoals;
-      awayGoals = goals.awayGoals;
-      status = resultFromGoals(goals.homeGoals, goals.awayGoals) === pick.outcome ? "hitting" : "busted";
-    }
-  } catch {
-    // Scores unavailable — leave the pick pending rather than failing the list.
+  let settlement: SettlementRecord | null = null;
+  if (!pick.demo && now >= pick.kickoffAt) {
+    const raw = await env.PICKS.get(settlementKey(pick.fixtureId));
+    settlement = raw ? JSON.parse(raw) : null;
   }
 
+  // Scores are only consulted for phases that need them: replays (final
+  // score reveal) and live fixtures. Never pre-kickoff, never once settled.
+  let lastScore = null;
+  const needsScore = pick.demo || (now >= pick.kickoffAt && !settlement);
+  if (needsScore) {
+    try {
+      const asOf = pick.demo ? pick.kickoffAt + 3 * 3600 * 1000 : undefined;
+      const scores = await getScoresSnapshot(config, pick.fixtureId, asOf);
+      lastScore = scores.at(-1) ?? null;
+    } catch {
+      // Scores unavailable — deriveStatus treats it as no data.
+    }
+  }
+
+  const derived = deriveStatus(pick, now, lastScore, settlement);
+  const { settled: _settled, creditedPoints: _credited, ...base } = pick;
+
   return {
-    ...pick,
-    status,
-    homeGoals,
-    awayGoals,
-    potentialPoints: Math.round(BASE_POINTS * pick.multiplier),
+    ...base,
+    ...derived,
+    potentialPoints: pointsFor(pick),
   };
 }
 
@@ -174,6 +177,6 @@ export async function listPicks(
     }
   }
 
-  const withStatuses = await Promise.all([...byFixture.values()].map((p) => withStatus(config, p)));
+  const withStatuses = await Promise.all([...byFixture.values()].map((p) => withStatus(env, config, p)));
   return withStatuses.sort((a, b) => b.lockedAt - a.lockedAt);
 }
