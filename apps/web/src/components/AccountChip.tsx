@@ -20,13 +20,20 @@ export function AccountChip({ onIdentityChange }: { onIdentityChange: () => void
   const { setVisible } = useWalletModal();
   const queryClient = useQueryClient();
   const [guestPickCount, setGuestPickCount] = useState<number | null>(null);
-  const autoSignAttempted = useRef(false);
+  // Pubkey the auto sign-in already fired for in THIS connected session —
+  // prevents re-firing on unrelated wallet state changes (esp. disconnect,
+  // where a stale adapter made signMessage throw and wedged the UI).
+  const attemptedFor = useRef<string | null>(null);
 
   const session = getSession();
 
   const signIn = useMutation({
     mutationFn: async () => {
-      if (!publicKey || !signMessage) throw new Error("wallet not ready");
+      // Re-checked at call time: the adapter can vanish between the effect
+      // scheduling this and it actually running.
+      if (!connected || !publicKey || typeof signMessage !== "function") {
+        throw new Error("wallet not connected");
+      }
       const { nonce, message } = await fetchNonce();
       const signature = await signMessage(new TextEncoder().encode(message));
       const auth = await verifySignIn({
@@ -34,8 +41,6 @@ export function AccountChip({ onIdentityChange }: { onIdentityChange: () => void
         signature: btoa(String.fromCharCode(...signature)),
         nonce,
       });
-      // Counted before the session token exists, so the request runs as the
-      // guest identity rather than the freshly signed-in wallet.
       const guestPicks = linkAlreadyOffered() ? [] : await fetchPicks(getUserId());
       return { ...auth, guestPickCount: guestPicks.length };
     },
@@ -47,14 +52,37 @@ export function AccountChip({ onIdentityChange }: { onIdentityChange: () => void
     },
   });
 
-  // Connect and sign-in are one continuous flow: the signature request
-  // opens as soon as the wallet connects.
+  const { mutate: fireSignIn, reset: resetSignIn, isPending, isError } = signIn;
+
+  // Connect→sign is one continuous flow, gated strictly on a live, capable,
+  // signed-out adapter, at most once per pubkey per connection.
   useEffect(() => {
-    if (connected && signMessage && !session && !signIn.isPending && !autoSignAttempted.current) {
-      autoSignAttempted.current = true;
-      signIn.mutate();
+    if (
+      connected &&
+      publicKey &&
+      typeof signMessage === "function" &&
+      !getSession() &&
+      !isPending &&
+      attemptedFor.current !== publicKey.toBase58()
+    ) {
+      attemptedFor.current = publicKey.toBase58();
+      fireSignIn();
     }
-  }, [connected, signMessage, session, signIn]);
+  }, [connected, publicKey, signMessage, isPending, fireSignIn]);
+
+  // Any disconnect (button or wallet-initiated) resets the machine to idle:
+  // session cleared, no error state, button back to "Connect wallet".
+  useEffect(() => {
+    if (!connected) {
+      attemptedFor.current = null;
+      resetSignIn();
+      if (getSession()) {
+        clearSession();
+        onIdentityChange();
+        void queryClient.invalidateQueries();
+      }
+    }
+  }, [connected, resetSignIn, onIdentityChange, queryClient]);
 
   const link = useMutation({
     mutationFn: () => linkGuest(getUserId()),
@@ -65,30 +93,22 @@ export function AccountChip({ onIdentityChange }: { onIdentityChange: () => void
     },
   });
 
-  const signOut = () => {
-    clearSession();
-    autoSignAttempted.current = false;
-    void disconnect();
-    onIdentityChange();
-    void queryClient.invalidateQueries();
-  };
-
   const chipClass =
     "rounded-full border border-line bg-surface px-3 py-1.5 text-xs font-medium transition-colors hover:border-line-bright";
 
   return (
     <div className="flex flex-col items-end gap-2">
       {session ? (
-        <button onClick={signOut} className={cn(chipClass, "text-gold")}>
+        <button onClick={() => void disconnect()} className={cn(chipClass, "text-gold")}>
           {truncateAddress(session.pubkey)}
         </button>
       ) : connected && publicKey ? (
         <button
-          onClick={() => signIn.mutate()}
-          disabled={signIn.isPending}
+          onClick={() => fireSignIn()}
+          disabled={isPending}
           className={cn(chipClass, "border-gold/50 text-gold")}
         >
-          {signIn.isPending ? "Check your wallet…" : "Retry sign-in"}
+          {isPending ? "Check your wallet…" : isError ? "Retry sign-in" : "Check your wallet…"}
         </button>
       ) : (
         <button onClick={() => setVisible(true)} className={cn(chipClass, "text-ink-muted")}>
@@ -96,7 +116,7 @@ export function AccountChip({ onIdentityChange }: { onIdentityChange: () => void
         </button>
       )}
 
-      {signIn.isError && (
+      {isError && connected && (
         <p className="text-[10px] text-loss">{(signIn.error as Error).message}</p>
       )}
 

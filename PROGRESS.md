@@ -2,6 +2,12 @@
 
 Terse changelog, newest first. One entry per meaningful change: what, why, decisions/tradeoffs.
 
+## 2026-07-18 — Wallet state-machine + optimistic pick regressions (pre-final fixes)
+
+- **Wallet wedge:** the auto sign-in effect depended on the whole mutation object, so it re-fired on any wallet state change — including mid-disconnect renders with a stale adapter, throwing "signMessage is not a function" and freezing the UI in "Retry sign-in". Now: auto-fire gated on connected + pubkey + callable signMessage + no session + at most once per pubkey per connection (ref-tracked); adapter re-checked at call time inside the mutation; any disconnect (button or wallet-side) resets the machine to idle, clears the session, and returns the button to "Connect wallet". "Retry sign-in" renders only on a genuine failed attempt while still connected (e.g. user rejected the prompt).
+- **Pick lock now truly optimistic:** moved from onSuccess to onMutate — the pick appears in My Picks synchronously with a gold-pulse "Locking…" row, confirms in place with the server-snapshotted multiplier, rolls back on error (previous list restored, error banner shows). Tap-to-visible is one synchronous render.
+- **Prod acceptance:** real pre-match pick reads `locked` (France v England @ 4.25); replay pick locks at kickoff odds (6.43x) with reveal data (3-1 busted); malformed guest UUID rejected 400; registry steady state = 1 GET/tick, zero lists. Both live markets (tonight + final) are currently suspended TxLINE-side ~5h out — same on/off pattern as yesterday; greyed cards cover it and the UI picks up quotes on the next poll. **Not machine-verifiable here:** the wallet connect→sign→disconnect→reconnect cycle and the 100ms tap feel need a human browser pass — do it on the prod URL with Phantom before recording.
+
 ## 2026-07-18 — KV free-tier budget fix (zero-list cron) + item-3 UX
 
 **KV budget model (free tier, resets 00:00 UTC):** 1,000 lists/day is the scarce resource — 100k reads and 1k writes are not the constraint. The per-minute cron was listing `pickf:` prefixes per due fixture per tick (~10 lists/min with the 120h lookback) and burned 650 lists before the dashboard alert. Model to keep in mind: **every recurring code path must do zero lists**; lists are reserved for rare, bounded, user-triggered work.

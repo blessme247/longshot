@@ -62,28 +62,61 @@ export function App() {
     refetchInterval: 15_000,
   });
 
+  const picksKey = ["picks", identity, identityEpoch];
+
+  // Fully optimistic: the pick lands in My Picks synchronously on tap
+  // (in-flight style), confirms with the server-snapshotted multiplier, and
+  // rolls back visibly on failure. Nothing blocks on the round-trip.
   const lock = useMutation({
     mutationFn: (vars: { fixtureId: number; outcome: Outcome }) =>
       lockPick({ userId: guestId, ...vars }),
-    onSuccess: (pick) => {
-      // Real picks render as locked immediately; replays need the server's
-      // reveal data, so they wait for the refetch.
-      if (!pick.demo) {
-        queryClient.setQueryData<ApiPick[]>(["picks", identity, identityEpoch], (old) => {
-          const optimistic: ApiPick = {
-            ...pick,
-            status: "locked",
-            homeGoals: null,
-            awayGoals: null,
-            creditedPoints: null,
-            potentialPoints: Math.round(100 * pick.multiplier),
-          };
-          const rest = (old ?? []).filter((p) => p.fixtureId !== pick.fixtureId);
-          return [optimistic, ...rest];
-        });
-      }
-      void queryClient.invalidateQueries({ queryKey: ["picks"] });
+    onMutate: async (vars) => {
+      await queryClient.cancelQueries({ queryKey: ["picks"] });
+      const previous = queryClient.getQueryData<ApiPick[]>(picksKey);
+      const fixture = fixtures.data?.find((f) => f.fixtureId === vars.fixtureId);
+      const multiplier = fixture?.multipliers?.[vars.outcome] ?? 0;
+      const optimistic: ApiPick = {
+        userId: identity,
+        fixtureId: vars.fixtureId,
+        outcome: vars.outcome,
+        multiplier,
+        lockedAt: Date.now(),
+        demo: fixture?.demo ?? false,
+        home: fixture?.home ?? "",
+        away: fixture?.away ?? "",
+        kickoffAt: fixture?.kickoffAt ?? 0,
+        status: "locked",
+        homeGoals: null,
+        awayGoals: null,
+        creditedPoints: null,
+        potentialPoints: Math.round(100 * multiplier),
+        optimistic: true,
+      };
+      queryClient.setQueryData<ApiPick[]>(picksKey, (old) => [
+        optimistic,
+        ...(old ?? []).filter((p) => p.fixtureId !== vars.fixtureId),
+      ]);
+      return { previous };
     },
+    onError: (_err, _vars, context) => {
+      if (context) queryClient.setQueryData(picksKey, context.previous);
+    },
+    onSuccess: (pick) => {
+      queryClient.setQueryData<ApiPick[]>(picksKey, (old) =>
+        (old ?? []).map((p) =>
+          p.fixtureId === pick.fixtureId
+            ? {
+                ...p,
+                ...pick,
+                status: pick.demo ? p.status : "locked",
+                potentialPoints: Math.round(100 * pick.multiplier),
+                optimistic: false,
+              }
+            : p,
+        ),
+      );
+    },
+    onSettled: () => void queryClient.invalidateQueries({ queryKey: ["picks"] }),
   });
 
   const lockingFixtureId = lock.isPending ? lock.variables?.fixtureId ?? null : null;

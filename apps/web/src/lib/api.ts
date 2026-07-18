@@ -26,6 +26,8 @@ export interface ApiPick {
   homeGoals: number | null;
   awayGoals: number | null;
   potentialPoints: number;
+  // Client-only marker for in-flight optimistic rows; never sent by the API.
+  optimistic?: boolean;
 }
 
 export interface ProofStep {

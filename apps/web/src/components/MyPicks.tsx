@@ -101,7 +101,35 @@ function ReplayReveal({ pick }: { pick: ApiPick }) {
 
 function PickRow({ pick }: { pick: ApiPick }) {
   const [showVerify, setShowVerify] = useState(false);
-  const verifiable = !pick.demo && pick.kickoffAt <= Date.now();
+  const verifiable = !pick.demo && !pick.optimistic && pick.kickoffAt <= Date.now();
+
+  if (pick.optimistic) {
+    return (
+      <motion.div
+        layout
+        initial={{ opacity: 0, y: 4 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="flex animate-pulse items-center justify-between gap-3 rounded-lg border border-gold/40 bg-raised px-3 py-2"
+      >
+        <div className="min-w-0">
+          <p className="truncate text-sm font-medium">
+            {flag(pick.home)} {pick.home}
+            <span className="mx-1 text-ink-faint">v</span>
+            {flag(pick.away)} {pick.away}
+          </p>
+          <p className="truncate text-xs text-ink-muted">
+            {OUTCOME_LABEL(pick)} @{" "}
+            <span className="font-condensed font-semibold tabular-nums">
+              {pick.multiplier.toFixed(2)}x
+            </span>
+          </p>
+        </div>
+        <span className="shrink-0 rounded bg-gold/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-widest text-gold">
+          Locking…
+        </span>
+      </motion.div>
+    );
+  }
 
   return (
     <motion.div layout className="flex flex-col gap-2 rounded-lg border border-line bg-raised px-3 py-2">
