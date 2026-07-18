@@ -43,10 +43,11 @@ function StatusChip({ pick }: { pick: ApiPick }) {
 }
 
 function Points({ pick }: { pick: ApiPick }) {
+  const unit = pick.demo ? "practice pts" : "pts";
   if (pick.status === "hitting" && pick.demo) {
     return (
       <span className="font-condensed text-base font-bold tabular-nums text-gold">
-        <CountUp to={pick.potentialPoints} /> pts
+        <CountUp to={pick.potentialPoints} /> {unit}
       </span>
     );
   }
@@ -57,7 +58,7 @@ function Points({ pick }: { pick: ApiPick }) {
         pick.status === "busted" ? "text-ink-faint line-through" : "text-ink-muted",
       )}
     >
-      {pick.potentialPoints} pts
+      {pick.potentialPoints} {unit}
     </span>
   );
 }

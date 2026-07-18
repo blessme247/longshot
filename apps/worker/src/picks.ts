@@ -61,10 +61,9 @@ export async function lockPick(
     return { error: "unknown fixture", status: 404 };
   }
 
+  // Server-derived, never client-supplied: any pick locked at or after
+  // kickoff is a practice/replay pick and must stay off the real leaderboard.
   const demo = fixture.StartTime <= Date.now();
-  if (!demo && fixture.StartTime <= Date.now()) {
-    return { error: "fixture already kicked off", status: 409 };
-  }
 
   // Server-side odds snapshot at lock time is the source of truth — the
   // client never supplies odds. Demo replays settled fixtures at kickoff.

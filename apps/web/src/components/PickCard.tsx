@@ -36,7 +36,17 @@ function KickoffLabel({ fixture }: { fixture: ApiFixture }) {
   }
   if (fixture.demo) {
     return (
-      <span className="text-[10px] font-semibold uppercase tracking-widest text-ink-faint">FT</span>
+      <span className="flex items-center gap-1.5">
+        <span className="rounded bg-raised px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-widest text-cool">
+          Replay
+        </span>
+        <span className="text-[10px] font-medium uppercase tracking-widest text-ink-faint">
+          {new Date(fixture.kickoffAt).toLocaleDateString(undefined, {
+            day: "numeric",
+            month: "short",
+          })}
+        </span>
+      </span>
     );
   }
   return (
