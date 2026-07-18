@@ -2,6 +2,19 @@
 
 Terse changelog, newest first. One entry per meaningful change: what, why, decisions/tradeoffs.
 
+## 2026-07-18 — Live-match hotfix: /api/picks was 500ing (KV list quota), not stale cache
+
+Diagnosed during France v England via `wrangler tail`: `/api/picks` threw `KV list() limit exceeded for the day` in `picksForIdentity`. The free-tier 1,000/day **list** quota was exhausted by a day of per-request polling (each `/api/picks` did a KV list per identity). The "stale score" symptom was TanStack `keepPreviousData` masking the 500 with the last pre-kickoff payload. Fixes (read-path + UI only; settle.ts/commit.ts untouched, deployed to the existing underdog-* deployments):
+
+- **List-free `/api/picks`:** the client now passes the fixture ids it already has (`?fixtures=…`), and the worker does scoped `GET pick:{id}:{fixtureId}` lookups instead of a KV list. Reads are on the large 100k/day quota; lists are reserved for the (rare) commitment/settlement per-fixture work. This also stops tomorrow's final from hitting the same wall.
+- **Adaptive refetch:** both fixtures and picks poll 10s while any fixture is in-play, 60s otherwise.
+- **Provisional presentation (item 2):** live picks render AHEAD / BEHIND (muted) with "if it ends now" microcopy; WON / LOST full-colour is settlement-only; replay reveals unchanged.
+- Verified on prod: `/api/picks` 200 (was 500), France v England draw pick shows `hitting` 0-0, frontend bundle sends `fixtures=`.
+
+**Settlement status:** the settlement path (`realPicksFor`) also uses a KV list, so it was blocked by the same exhausted quota — it could NOT settle before the **00:00 UTC daily reset**. It's idempotent and the cron retries, so France v England settles automatically just after midnight UTC (it ended 0-0 at 90' → draw wins). Did not touch the settlement path per the hard constraint; it self-heals on reset. Follow-up for later: give settlement/commitment a list-free per-fixture identity index too (same pattern), so the list quota is never the bottleneck.
+
+**Git:** this hotfix is committed on `main` at the pre-rename base; the Longshot rename commit is parked on branch `rename-pending` for the post-settlement cutover (kept separate per instruction).
+
 ## 2026-07-18 — Leaderboard UI + won/played (honest status: endpoint pre-existed, page did NOT)
 
 **Did this exist before today?** The `GET /api/leaderboard` endpoint has existed since the settlement work landed (2026-07-18 earlier entry), backed by the `board:v1` composite key. There was **no UI page** — the board's row-reorder animation was deferred twice with "no leaderboard exists yet." Summaries that referenced "the leaderboard" meant the endpoint only. Today closes the gap.

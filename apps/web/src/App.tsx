@@ -53,19 +53,29 @@ export function App() {
   const guestId = getUserId();
   const identity = getSession()?.pubkey ?? guestId;
 
+  // Poll fast while a fixture is in-play (live scores), slow otherwise.
+  const LIVE_WINDOW_MS = 2.5 * 3600 * 1000;
+  const anyLive = (list: ApiFixture[]) =>
+    list.some((f) => f.kickoffAt <= Date.now() && Date.now() < f.kickoffAt + LIVE_WINDOW_MS);
+
   const fixtures = useQuery({
     queryKey: ["fixtures"],
     queryFn: fetchFixtures,
-    refetchInterval: 15_000,
+    refetchInterval: (query) => (anyLive(query.state.data ?? []) ? 10_000 : 60_000),
   });
+
+  const fixtureIds = (fixtures.data ?? []).map((f) => f.fixtureId);
+  const fixtureIdsCsv = fixtureIds.join(",");
+  const pollMs = anyLive(fixtures.data ?? []) ? 10_000 : 60_000;
+
+  const picksKey = ["picks", identity, identityEpoch, fixtureIdsCsv];
 
   const picks = useQuery({
-    queryKey: ["picks", identity, identityEpoch],
-    queryFn: () => fetchPicks(guestId),
-    refetchInterval: 15_000,
+    queryKey: picksKey,
+    queryFn: () => fetchPicks(guestId, fixtureIds),
+    enabled: fixtureIds.length > 0,
+    refetchInterval: pollMs,
   });
-
-  const picksKey = ["picks", identity, identityEpoch];
 
   // Fully optimistic: the pick lands in My Picks synchronously on tap
   // (in-flight style), confirms with the server-snapshotted multiplier, and

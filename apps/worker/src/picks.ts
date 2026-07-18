@@ -153,14 +153,19 @@ async function withStatus(env: Env, config: TxLineConfig, pick: Pick): Promise<A
   };
 }
 
-async function picksForIdentity(env: Env, identity: string): Promise<Pick[]> {
-  const listed = await env.PICKS.list({ prefix: `pick:${identity}:` });
-  const picks: Pick[] = [];
-  for (const key of listed.keys) {
-    const raw = await env.PICKS.get(key.name);
-    if (raw) picks.push(JSON.parse(raw));
-  }
-  return picks;
+// Scoped point lookups (GET per fixture) instead of a KV list per identity.
+// KV list has a tiny free-tier daily quota that per-request polling exhausts;
+// GETs are on the large read quota. The caller supplies the fixture ids it
+// cares about (the frontend already has them from /api/fixtures).
+async function picksForIdentity(
+  env: Env,
+  identity: string,
+  fixtureIds: number[],
+): Promise<Pick[]> {
+  const raws = await Promise.all(
+    fixtureIds.map((fid) => env.PICKS.get(pickKey(identity, fid))),
+  );
+  return raws.filter((r): r is string => r !== null).map((r) => JSON.parse(r));
 }
 
 // Authenticated reads merge linked guest picks with the wallet's own
@@ -171,14 +176,17 @@ export async function listPicks(
   config: TxLineConfig,
   identity: string,
   includeLinked: boolean,
+  fixtureIds: number[],
 ): Promise<ApiPick[]> {
+  if (fixtureIds.length === 0) return [];
+
   const identities = includeLinked
     ? [...(await linkedGuestIds(env, identity)), identity]
     : [identity];
 
   const byFixture = new Map<number, Pick>();
   for (const id of identities) {
-    for (const pick of await picksForIdentity(env, id)) {
+    for (const pick of await picksForIdentity(env, id, fixtureIds)) {
       byFixture.set(pick.fixtureId, pick);
     }
   }

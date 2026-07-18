@@ -98,8 +98,15 @@ export default {
         if (!identity || (!pubkey && !isGuestIdentity(identity))) {
           return json({ error: "sign in or supply a guest UUID userId" }, 400);
         }
+        // Fixture ids the client already knows (from /api/fixtures) drive
+        // scoped GET lookups — no per-request KV list. Capped to bound work.
+        const fixtureIds = (url.searchParams.get("fixtures") ?? "")
+          .split(",")
+          .map((s) => Number(s))
+          .filter((n) => Number.isInteger(n) && n > 0)
+          .slice(0, 100);
         const picks = await withTxLine(env, (config) =>
-          listPicks(env, config, identity, pubkey !== null),
+          listPicks(env, config, identity, pubkey !== null, fixtureIds),
         );
         return json(picks);
       }

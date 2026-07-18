@@ -70,8 +70,9 @@ export function fetchFixtures(): Promise<ApiFixture[]> {
   return request("/api/fixtures");
 }
 
-export function fetchPicks(guestId: string): Promise<ApiPick[]> {
-  return request(`/api/picks?userId=${encodeURIComponent(guestId)}`);
+export function fetchPicks(guestId: string, fixtureIds: number[]): Promise<ApiPick[]> {
+  const fixtures = fixtureIds.join(",");
+  return request(`/api/picks?userId=${encodeURIComponent(guestId)}&fixtures=${fixtures}`);
 }
 
 export function lockPick(body: {

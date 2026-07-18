@@ -11,6 +11,18 @@ import { cn } from "@/lib/utils";
 const OUTCOME_LABEL = (pick: ApiPick): string =>
   pick.outcome === "home" ? pick.home : pick.outcome === "away" ? pick.away : "Draw";
 
+// Live picks are provisional (AHEAD/BEHIND, muted) — settled-verdict language
+// and full colours (WON/LOST) are reserved for actual settlement.
+const STATUS_LABEL: Record<ApiPick["status"], string> = {
+  locked: "Locked",
+  hitting: "Ahead",
+  busted: "Behind",
+  won: "Won",
+  lost: "Lost",
+};
+
+const isProvisional = (pick: ApiPick) => pick.status === "hitting" || pick.status === "busted";
+
 function statusStyle(pick: ApiPick): string {
   switch (pick.status) {
     case "won":
@@ -18,9 +30,9 @@ function statusStyle(pick: ApiPick): string {
     case "lost":
       return "bg-loss/15 text-loss";
     case "hitting":
-      return "bg-win-muted/20 text-win-muted";
+      return "bg-win-muted/15 text-win-muted";
     case "busted":
-      return "bg-loss-muted/20 text-loss-muted";
+      return "bg-loss-muted/15 text-loss-muted";
     default:
       return "bg-raised text-ink-muted";
   }
@@ -40,7 +52,7 @@ function StatusChip({ pick }: { pick: ApiPick }) {
           statusStyle(pick),
         )}
       >
-        {pick.status}
+        {STATUS_LABEL[pick.status]}
       </motion.span>
     </AnimatePresence>
   );
@@ -168,7 +180,14 @@ function PickRow({ pick }: { pick: ApiPick }) {
               Verify
             </button>
           )}
-          {!pick.demo && <StatusChip pick={pick} />}
+          {!pick.demo && (
+            <div className="flex flex-col items-end gap-0.5">
+              <StatusChip pick={pick} />
+              {isProvisional(pick) && (
+                <span className="text-[9px] italic text-ink-faint">if it ends now</span>
+              )}
+            </div>
+          )}
         </div>
       </div>
       {showVerify && <VerifyPanel pick={pick} identity={pick.userId} />}

@@ -3,7 +3,7 @@ import { useWalletModal } from "@solana/wallet-adapter-react-ui";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 
-import { fetchNonce, fetchPicks, linkGuest, verifySignIn } from "@/lib/api";
+import { fetchFixtures, fetchNonce, fetchPicks, linkGuest, verifySignIn } from "@/lib/api";
 import {
   clearSession,
   getSession,
@@ -41,8 +41,12 @@ export function AccountChip({ onIdentityChange }: { onIdentityChange: () => void
         signature: btoa(String.fromCharCode(...signature)),
         nonce,
       });
-      const guestPicks = linkAlreadyOffered() ? [] : await fetchPicks(getUserId());
-      return { ...auth, guestPickCount: guestPicks.length };
+      let guestPickCount = 0;
+      if (!linkAlreadyOffered()) {
+        const fixtureIds = (await fetchFixtures()).map((f) => f.fixtureId);
+        guestPickCount = (await fetchPicks(getUserId(), fixtureIds)).length;
+      }
+      return { ...auth, guestPickCount };
     },
     onSuccess: ({ token, pubkey, guestPickCount: count }) => {
       storeSession(token, pubkey);
