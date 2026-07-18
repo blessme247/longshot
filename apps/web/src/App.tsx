@@ -5,7 +5,7 @@ import { AccountChip } from "@/components/AccountChip";
 import { MyPicks } from "@/components/MyPicks";
 import { PickCard } from "@/components/PickCard";
 import { PickCardSkeleton } from "@/components/PickCardSkeleton";
-import { fetchFixtures, fetchPicks, lockPick, type ApiFixture, type Outcome } from "@/lib/api";
+import { fetchFixtures, fetchPicks, lockPick, type ApiFixture, type ApiPick, type Outcome } from "@/lib/api";
 import { getSession } from "@/lib/auth";
 import { getUserId } from "@/lib/user";
 
@@ -65,8 +65,28 @@ export function App() {
   const lock = useMutation({
     mutationFn: (vars: { fixtureId: number; outcome: Outcome }) =>
       lockPick({ userId: guestId, ...vars }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["picks"] }),
+    onSuccess: (pick) => {
+      // Real picks render as locked immediately; replays need the server's
+      // reveal data, so they wait for the refetch.
+      if (!pick.demo) {
+        queryClient.setQueryData<ApiPick[]>(["picks", identity, identityEpoch], (old) => {
+          const optimistic: ApiPick = {
+            ...pick,
+            status: "locked",
+            homeGoals: null,
+            awayGoals: null,
+            creditedPoints: null,
+            potentialPoints: Math.round(100 * pick.multiplier),
+          };
+          const rest = (old ?? []).filter((p) => p.fixtureId !== pick.fixtureId);
+          return [optimistic, ...rest];
+        });
+      }
+      void queryClient.invalidateQueries({ queryKey: ["picks"] });
+    },
   });
+
+  const lockingFixtureId = lock.isPending ? lock.variables?.fixtureId ?? null : null;
 
   const pickedByFixture = new Map(
     (picks.data ?? []).map((p) => [p.fixtureId, p.outcome]),
@@ -85,7 +105,7 @@ export function App() {
       key={fixture.fixtureId}
       fixture={fixture}
       pickedOutcome={pickedByFixture.get(fixture.fixtureId) ?? null}
-      locking={lock.isPending}
+      locking={lockingFixtureId === fixture.fixtureId}
       onPick={(outcome) => lock.mutate({ fixtureId: fixture.fixtureId, outcome })}
     />
   );

@@ -1,4 +1,5 @@
 import { Lock } from "lucide-react";
+import { useState } from "react";
 
 import { OddsTicker } from "@/components/OddsTicker";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -63,6 +64,8 @@ function KickoffLabel({ fixture }: { fixture: ApiFixture }) {
 export function PickCard({ fixture, pickedOutcome, locking, onPick }: PickCardProps) {
   const { multipliers } = fixture;
   const marketOpen = multipliers !== null;
+  const [pressed, setPressed] = useState<Outcome | null>(null);
+  if (pressed !== null && !locking) setPressed(null);
 
   return (
     <Card className={cn("w-full", !marketOpen && "opacity-60")}>
@@ -91,28 +94,35 @@ export function PickCard({ fixture, pickedOutcome, locking, onPick }: PickCardPr
             {OUTCOMES.map(({ key, label }) => {
               const multiplier = multipliers[key];
               const picked = pickedOutcome === key;
+              const isPending = locking && pressed === key;
               return (
                 <button
                   key={key}
-                  disabled={pickedOutcome !== null || locking}
-                  onClick={() => onPick(key)}
+                  disabled={locking}
+                  onClick={() => {
+                    setPressed(key);
+                    onPick(key);
+                  }}
                   className={cn(
                     "relative flex flex-1 flex-col items-center rounded-lg border px-1 pb-2 pt-1.5 transition-all",
-                    picked
+                    picked || isPending
                       ? "border-gold bg-gold/10 shadow-gold-glow"
                       : "border-line bg-raised hover:border-line-bright",
-                    pickedOutcome !== null && !picked && "opacity-40",
+                    isPending && "animate-pulse",
+                    pickedOutcome !== null && !picked && !isPending && "opacity-40",
                     "disabled:cursor-not-allowed",
                   )}
                 >
-                  {picked && <Lock className="absolute right-1.5 top-1.5 h-3 w-3 text-gold" />}
+                  {picked && !isPending && (
+                    <Lock className="absolute right-1.5 top-1.5 h-3 w-3 text-gold" />
+                  )}
                   <OddsTicker
                     value={multiplier}
-                    color={picked ? "var(--gold)" : riskColor(multiplier)}
+                    color={picked || isPending ? "var(--gold)" : riskColor(multiplier)}
                     className="text-3xl leading-tight"
                   />
                   <span className="w-full truncate text-center text-[10px] font-medium uppercase tracking-wide text-ink-muted">
-                    {label(fixture)}
+                    {isPending ? "Locking…" : label(fixture)}
                   </span>
                 </button>
               );

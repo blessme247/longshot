@@ -2,6 +2,18 @@
 
 Terse changelog, newest first. One entry per meaningful change: what, why, decisions/tradeoffs.
 
+## 2026-07-18 — KV free-tier budget fix (zero-list cron) + item-3 UX
+
+**KV budget model (free tier, resets 00:00 UTC):** 1,000 lists/day is the scarce resource — 100k reads and 1k writes are not the constraint. The per-minute cron was listing `pickf:` prefixes per due fixture per tick (~10 lists/min with the 120h lookback) and burned 650 lists before the dashboard alert. Model to keep in mind: **every recurring code path must do zero lists**; lists are reserved for rare, bounded, user-triggered work.
+
+- Step zero (deployed within a minute of the alert): cron widened to `*/5`.
+- **Registry (`registry:v1`)**: one small key holding {fixtureId, kickoffAt, committed, settled} per active fixture. Fixtures enroll on their first real pick write and are pruned when both jobs finish. Cron = **1 KV GET per tick, zero lists** outside a fixture's action window; commit/settle jobs read `pickf:` prefixes only inside windows, bounded per fixture with a give-up cap. Commitments no longer need the TxLINE feed at all.
+- Rate limiting moved in-memory per isolate (KV writes to protect KV quota was self-defeating); fixtures response cached 10s per isolate; leaderboard now a single `board:v1` composite key maintained at settlement time (was a list per request).
+- Tonight-mode crons: `*/5` baseline plus dated per-minute windows 20:55–21:15 and 22:30–23:59 UTC (July 18 only, inert afterwards — remove tomorrow).
+- **Ops estimate:** before ≈ 600+ lists/hour from the cron alone; after ≈ 0 lists/hour steady state, ~3–6 lists total inside tonight's two windows, 12–60 reads/hour depending on cron cadence. Remaining list headroom for tonight: ~350 — the new design needs single digits.
+- Prod registry seeded with tonight's fixture (existing picks predate enrollment).
+- Item-3 UX shipped in the same window: button-level "Locking…" pending + optimistic locked state (3.1), replay rows are reveals — "You'd have won +N pts — real result 2–0" — never a bare status tag (3.2), connect→sign is one continuous flow (3.3), link prompt only appears with guest picks and states the count (3.4).
+
 ## 2026-07-18 — Status state machine fix + settlement worker (pre-match deploys for tonight)
 
 - **Status bug (urgent):** pre-match real picks showed "Busted" — pre-match score snapshots contain a fixture-metadata record with no goals, read as 0-0 and compared against the pick. Status is now a pure phase machine (`status.ts`, vitest-covered including the exact regression): pre-kickoff → `locked` (scores never even fetched), live → provisional `hitting`/`busted` (no score yet = genuine 0-0), settled real picks → `won`/`lost` + credited points from the settlement record only, replays → reveal semantics. Verified on prod: France v England pick shows `locked` pre-match.

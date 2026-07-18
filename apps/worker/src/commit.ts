@@ -8,12 +8,6 @@ import {
   type ProofStep,
 } from "@underdog/commitment";
 import {
-  WORLD_CUP_COMPETITION_ID,
-  getFixturesSnapshot,
-  type Fixture,
-  type TxLineConfig,
-} from "@underdog/txline";
-import {
   Connection,
   Keypair,
   PublicKey,
@@ -23,6 +17,7 @@ import {
 
 import type { Env } from "./env";
 import type { Pick } from "./picks";
+import { updateRegistryEntry, type RegistryEntry } from "./registry";
 
 // KV list is eventually consistent (writes can take ~60s to appear in list
 // results from other locations). Committing exactly at kickoff could
@@ -30,10 +25,9 @@ import type { Pick } from "./picks";
 // forever. The write gate still closes at kickoff exactly (picks.ts); tree
 // construction just waits out the consistency window.
 const COMMIT_DELAY_MS = 3 * 60 * 1000;
-// Wide lookback so cron downtime never permanently skips a fixture; past
-// fixtures can't gain committable picks (demo flag), so re-scanning is free.
-const LOOKBACK_MS = 120 * 3600 * 1000;
-const WORLD_CUP_START_EPOCH_DAY = 20624;
+// If the pick index still reads empty this long after kickoff for a
+// registered fixture, stop retrying (bounds list usage on a KV anomaly).
+const GIVE_UP_MS = 3600 * 1000;
 
 const MEMO_PROGRAM_ID = new PublicKey("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr");
 const MIN_BALANCE_LAMPORTS = 10_000;
@@ -135,28 +129,29 @@ async function sendRoot(
   return connection.sendRawTransaction(tx.serialize());
 }
 
-export async function runCommitments(env: Env, config: TxLineConfig): Promise<void> {
+// Registry entries are the only work source: one KV GET upstream, no lists
+// outside a fixture's action window.
+export async function runCommitments(env: Env, entries: RegistryEntry[]): Promise<void> {
   const now = Date.now();
-  const fixtures = await getFixturesSnapshot(config, {
-    competitionId: WORLD_CUP_COMPETITION_ID,
-    startEpochDay: WORLD_CUP_START_EPOCH_DAY,
-  });
+  const due = entries.filter((e) => !e.committed && now >= e.kickoffAt + COMMIT_DELAY_MS);
 
-  const due = fixtures.filter(
-    (f: Fixture) =>
-      now >= f.StartTime + COMMIT_DELAY_MS && now - f.StartTime < LOOKBACK_MS,
-  );
-
-  for (const fixture of due) {
+  for (const entry of due) {
+    const fixture = { FixtureId: entry.fixtureId, StartTime: entry.kickoffAt };
     const recordRaw = await env.PICKS.get(commitmentKey(fixture.FixtureId));
     const record: CommitmentRecord | null = recordRaw ? JSON.parse(recordRaw) : null;
-    if (record?.status === "committed") continue;
+    if (record?.status === "committed") {
+      await updateRegistryEntry(env, fixture.FixtureId, { committed: true });
+      continue;
+    }
 
     try {
       const picks = await committablePicks(env, fixture);
       if (picks.length === 0) {
-        if (!record) {
-          console.log(`commitment: fixture ${fixture.FixtureId} has no committable picks, skipping`);
+        if (now >= fixture.StartTime + GIVE_UP_MS) {
+          console.error(
+            `COMMITMENT: registered fixture ${fixture.FixtureId} still has an empty pick index — giving up`,
+          );
+          await updateRegistryEntry(env, fixture.FixtureId, { committed: true });
         }
         continue;
       }
@@ -182,6 +177,7 @@ export async function runCommitments(env: Env, config: TxLineConfig): Promise<vo
             commitmentKey(fixture.FixtureId),
             JSON.stringify({ ...record, status: "committed", slot }),
           );
+          await updateRegistryEntry(env, fixture.FixtureId, { committed: true });
           console.log(
             `commitment: fixture ${fixture.FixtureId} recovered — earlier tx ${record.txSig} had landed`,
           );
@@ -211,6 +207,7 @@ export async function runCommitments(env: Env, config: TxLineConfig): Promise<vo
           commitmentKey(fixture.FixtureId),
           JSON.stringify({ ...pending, status: "committed", txSig, slot }),
         );
+        await updateRegistryEntry(env, fixture.FixtureId, { committed: true });
         console.log(`commitment: fixture ${fixture.FixtureId} root ${root} committed in ${txSig}`);
       } else {
         console.log(

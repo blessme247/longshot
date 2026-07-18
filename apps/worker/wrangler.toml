@@ -4,7 +4,17 @@ compatibility_date = "2026-07-01"
 compatibility_flags = ["nodejs_compat"]
 
 [triggers]
-crons = ["* * * * *"]
+# Baseline every 5 min (registry makes each tick 1 KV read). The dated
+# entries give per-minute precision inside tonight's action windows
+# (France v England: kickoff 21:00 UTC, commit 21:03, FT ~22:50) and are
+# inert after July 18 — remove them tomorrow.
+crons = [
+  "*/5 * * * *",
+  "55-59 20 18 7 *",
+  "0-15 21 18 7 *",
+  "30-59 22 18 7 *",
+  "0-59 23 18 7 *",
+]
 
 [vars]
 TXLINE_BASE_URL = "https://txline.txodds.com"

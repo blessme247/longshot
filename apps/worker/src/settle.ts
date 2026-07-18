@@ -1,9 +1,6 @@
 import {
-  WORLD_CUP_COMPETITION_ID,
-  getFixturesSnapshot,
   getScoresSnapshot,
   resultFromGoals,
-  type Fixture,
   type Outcome,
   type ScoreUpdate,
   type TxLineConfig,
@@ -11,6 +8,7 @@ import {
 
 import type { Env } from "./env";
 import { pickIndexKey, pickKey, type Pick } from "./picks";
+import { updateRegistryEntry, type RegistryEntry } from "./registry";
 import { pointsFor } from "./status";
 
 // Settlement waits for the feed to mark the match ended (game phase 5) and
@@ -20,9 +18,8 @@ const EARLIEST_SETTLE_MS = 105 * 60 * 1000;
 // If the feed never emits the ended phase, settle on its last state after
 // this long — loudly, since it means trusting a stale final score.
 const FORCE_SETTLE_MS = 4 * 3600 * 1000;
-const LOOKBACK_MS = 120 * 3600 * 1000;
-const WORLD_CUP_START_EPOCH_DAY = 20624;
 const GAME_PHASE_ENDED = 5;
+const BOARD_KEY = "board:v1";
 
 export interface SettlementRecord {
   version: 1;
@@ -87,7 +84,7 @@ async function realPicksFor(env: Env, fixtureId: number): Promise<Pick[]> {
   return picks;
 }
 
-async function creditPick(env: Env, pick: Pick, result: Outcome): Promise<boolean> {
+async function creditPick(env: Env, pick: Pick, result: Outcome): Promise<LeaderboardRecord> {
   const points = result === pick.outcome ? pointsFor(pick) : 0;
   const key = leaderboardKey(pick.userId);
   const raw = await env.PICKS.get(key);
@@ -112,54 +109,80 @@ async function creditPick(env: Env, pick: Pick, result: Outcome): Promise<boolea
       env.PICKS.put(pickIndexKey(pick.fixtureId, pick.userId), json),
     ]);
   }
-  return points > 0;
+  return record;
 }
 
-export async function runSettlements(env: Env, config: TxLineConfig): Promise<void> {
+// The public board is one composite key (single GET to serve, zero lists);
+// lb:{identity} records stay the per-identity crediting source of truth.
+async function mergeBoard(env: Env, updated: LeaderboardRecord[]): Promise<void> {
+  if (updated.length === 0) return;
+  const raw = await env.PICKS.get(BOARD_KEY);
+  const rows: LeaderboardEntry[] = raw ? JSON.parse(raw) : [];
+  const byIdentity = new Map(rows.map((r) => [r.identity, r]));
+
+  for (const record of updated) {
+    byIdentity.set(record.identity, {
+      identity: record.identity,
+      points: record.points,
+      settledPicks: Object.keys(record.credited).length,
+    });
+  }
+
+  const merged = [...byIdentity.values()].sort((a, b) => b.points - a.points).slice(0, 100);
+  await env.PICKS.put(BOARD_KEY, JSON.stringify(merged));
+}
+
+// Registry entries are the only work source — no fixture-feed scans, no
+// KV lists outside a due fixture's settlement window.
+export async function runSettlements(
+  env: Env,
+  config: TxLineConfig,
+  entries: RegistryEntry[],
+): Promise<void> {
   const now = Date.now();
-  const fixtures = await getFixturesSnapshot(config, {
-    competitionId: WORLD_CUP_COMPETITION_ID,
-    startEpochDay: WORLD_CUP_START_EPOCH_DAY,
-  });
+  const due = entries.filter((e) => !e.settled && now >= e.kickoffAt + EARLIEST_SETTLE_MS);
 
-  const due = fixtures.filter(
-    (f: Fixture) =>
-      now >= f.StartTime + EARLIEST_SETTLE_MS && now - f.StartTime < LOOKBACK_MS,
-  );
-
-  for (const fixture of due) {
+  for (const entry of due) {
+    const fixtureId = entry.fixtureId;
     try {
-      const existing = await env.PICKS.get(settlementKey(fixture.FixtureId));
-      if (existing) continue;
+      const existing = await env.PICKS.get(settlementKey(fixtureId));
+      if (existing) {
+        await updateRegistryEntry(env, fixtureId, { settled: true });
+        continue;
+      }
 
-      const updates = await getScoresSnapshot(config, fixture.FixtureId);
+      const updates = await getScoresSnapshot(config, fixtureId);
       const last = updates.at(-1);
       if (!last) {
-        console.error(`SETTLEMENT: fixture ${fixture.FixtureId} has no score data past due time`);
+        console.error(`SETTLEMENT: fixture ${fixtureId} has no score data past due time`);
         continue;
       }
 
       const ended = matchEnded(updates);
-      const forced = !ended && now >= fixture.StartTime + FORCE_SETTLE_MS;
+      const forced = !ended && now >= entry.kickoffAt + FORCE_SETTLE_MS;
       if (!ended && !forced) continue;
       if (forced) {
         console.error(
-          `SETTLEMENT: fixture ${fixture.FixtureId} never reported ended phase — force-settling on last known score`,
+          `SETTLEMENT: fixture ${fixtureId} never reported ended phase — force-settling on last known score`,
         );
       }
 
       const { homeGoals, awayGoals } = goals90(last);
       const result = resultFromGoals(homeGoals, awayGoals);
 
-      const picks = await realPicksFor(env, fixture.FixtureId);
+      const picks = await realPicksFor(env, fixtureId);
+      const updatedRecords: LeaderboardRecord[] = [];
       let creditedCount = 0;
       for (const pick of picks) {
-        if (await creditPick(env, pick, result)) creditedCount++;
+        const record = await creditPick(env, pick, result);
+        updatedRecords.push(record);
+        if ((record.credited[String(fixtureId)] ?? 0) > 0) creditedCount++;
       }
+      await mergeBoard(env, updatedRecords);
 
       const record: SettlementRecord = {
         version: 1,
-        fixtureId: fixture.FixtureId,
+        fixtureId,
         result,
         homeGoals,
         awayGoals,
@@ -167,12 +190,13 @@ export async function runSettlements(env: Env, config: TxLineConfig): Promise<vo
         forced,
         creditedCount,
       };
-      await env.PICKS.put(settlementKey(fixture.FixtureId), JSON.stringify(record));
+      await env.PICKS.put(settlementKey(fixtureId), JSON.stringify(record));
+      await updateRegistryEntry(env, fixtureId, { settled: true });
       console.log(
-        `settlement: fixture ${fixture.FixtureId} ${homeGoals}-${awayGoals} (${result}), ${picks.length} picks, ${creditedCount} winners credited`,
+        `settlement: fixture ${fixtureId} ${homeGoals}-${awayGoals} (${result}), ${picks.length} picks, ${creditedCount} winners credited`,
       );
     } catch (err) {
-      console.error(`SETTLEMENT FAILED for fixture ${fixture.FixtureId}:`, err);
+      console.error(`SETTLEMENT FAILED for fixture ${fixtureId}:`, err);
     }
   }
 }
@@ -183,27 +207,20 @@ export interface LeaderboardEntry {
   settledPicks: number;
 }
 
-// Linked guests fold into their wallet's row at read time (display-only
-// linking — stored records keep their original identity).
+// One GET for the board plus one link lookup per row (reads are cheap on
+// the free tier; lists are not — this endpoint performs zero lists).
+// Linked guests fold into their wallet's row at read time.
 export async function leaderboard(env: Env): Promise<LeaderboardEntry[]> {
-  const listed = await env.PICKS.list({ prefix: "lb:" });
+  const raw = await env.PICKS.get(BOARD_KEY);
+  const stored: LeaderboardEntry[] = raw ? JSON.parse(raw) : [];
+
   const rows = new Map<string, LeaderboardEntry>();
-
-  for (const key of listed.keys) {
-    const raw = await env.PICKS.get(key.name);
-    if (!raw) continue;
-    const record: LeaderboardRecord = JSON.parse(raw);
-
-    const linkedWallet = await env.PICKS.get(`link:${record.identity}`);
-    const displayIdentity = linkedWallet ?? record.identity;
-
-    const row = rows.get(displayIdentity) ?? {
-      identity: displayIdentity,
-      points: 0,
-      settledPicks: 0,
-    };
-    row.points += record.points;
-    row.settledPicks += Object.keys(record.credited).length;
+  for (const entry of stored) {
+    const linkedWallet = await env.PICKS.get(`link:${entry.identity}`);
+    const displayIdentity = linkedWallet ?? entry.identity;
+    const row = rows.get(displayIdentity) ?? { identity: displayIdentity, points: 0, settledPicks: 0 };
+    row.points += entry.points;
+    row.settledPicks += entry.settledPicks;
     rows.set(displayIdentity, row);
   }
 

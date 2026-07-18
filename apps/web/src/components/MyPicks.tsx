@@ -76,6 +76,29 @@ function Points({ pick }: { pick: ApiPick }) {
   );
 }
 
+// Replay results are a reveal, never a verdict — no bare status tag.
+function ReplayReveal({ pick }: { pick: ApiPick }) {
+  const result = `${pick.homeGoals ?? "?"}–${pick.awayGoals ?? "?"}`;
+  return (
+    <p className="text-xs text-ink-muted">
+      <span className="mr-1.5 rounded bg-raised px-1 py-0.5 text-[9px] font-semibold uppercase tracking-widest text-cool">
+        Replay
+      </span>
+      {pick.status === "hitting" ? (
+        <>
+          You'd have won{" "}
+          <span className="font-condensed font-bold tabular-nums text-gold">
+            +{pick.potentialPoints} pts
+          </span>{" "}
+          — real result {result}.
+        </>
+      ) : (
+        <>You'd have busted — real result was {result}. Try another.</>
+      )}
+    </p>
+  );
+}
+
 function PickRow({ pick }: { pick: ApiPick }) {
   const [showVerify, setShowVerify] = useState(false);
   const verifiable = !pick.demo && pick.kickoffAt <= Date.now();
@@ -90,19 +113,23 @@ function PickRow({ pick }: { pick: ApiPick }) {
               <span className="mx-1 text-ink-faint">v</span>
               {flag(pick.away)} {pick.away}
             </span>
-            {pick.homeGoals !== null && (
+            {!pick.demo && pick.homeGoals !== null && (
               <span className="shrink-0 font-condensed text-lg font-bold tabular-nums">
                 {pick.homeGoals}–{pick.awayGoals}
               </span>
             )}
           </p>
-          <p className="truncate text-xs text-ink-muted">
-            {OUTCOME_LABEL(pick)} @{" "}
-            <span className="font-condensed font-semibold tabular-nums">
-              {pick.multiplier.toFixed(2)}x
-            </span>{" "}
-            · <Points pick={pick} />
-          </p>
+          {pick.demo ? (
+            <ReplayReveal pick={pick} />
+          ) : (
+            <p className="truncate text-xs text-ink-muted">
+              {OUTCOME_LABEL(pick)} @{" "}
+              <span className="font-condensed font-semibold tabular-nums">
+                {pick.multiplier.toFixed(2)}x
+              </span>{" "}
+              · <Points pick={pick} />
+            </p>
+          )}
         </div>
         <div className="flex shrink-0 items-center gap-2">
           {verifiable && (
@@ -113,7 +140,7 @@ function PickRow({ pick }: { pick: ApiPick }) {
               Verify
             </button>
           )}
-          <StatusChip pick={pick} />
+          {!pick.demo && <StatusChip pick={pick} />}
         </div>
       </div>
       {showVerify && <VerifyPanel pick={pick} identity={pick.userId} />}

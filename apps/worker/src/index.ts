@@ -1,5 +1,6 @@
 import { issueNonce, linkGuest, verifySignIn } from "./auth";
 import { buildProofResponse, commitmentKey, runCommitments } from "./commit";
+import { getRegistry } from "./registry";
 import { leaderboard, runSettlements } from "./settle";
 import type { Env } from "./env";
 import { getFixtureById, listFixtures } from "./fixtures";
@@ -48,12 +49,12 @@ export default {
       }
 
       if (request.method === "GET" && pathname === "/api/auth/nonce") {
-        if (await rateLimited(env, request)) return json({ error: "rate limited" }, 429);
+        if (rateLimited(request)) return json({ error: "rate limited" }, 429);
         return json(await issueNonce(env));
       }
 
       if (request.method === "POST" && pathname === "/api/auth/verify") {
-        if (await rateLimited(env, request)) return json({ error: "rate limited" }, 429);
+        if (rateLimited(request)) return json({ error: "rate limited" }, 429);
         const parsed = verifyBodySchema.safeParse(await request.json().catch(() => null));
         if (!parsed.success) return json({ error: "invalid body" }, 400);
         const result = await verifySignIn(env, parsed.data);
@@ -72,7 +73,7 @@ export default {
       }
 
       if (request.method === "POST" && pathname === "/api/picks") {
-        if (await rateLimited(env, request)) return json({ error: "rate limited" }, 429);
+        if (rateLimited(request)) return json({ error: "rate limited" }, 429);
         const parsed = pickBodySchema.safeParse(await request.json().catch(() => null));
         if (!parsed.success) return json({ error: "invalid body" }, 400);
 
@@ -135,15 +136,20 @@ export default {
   },
 
   async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
+    // One registry GET per tick; outside action windows nothing else runs.
     // Independent failure domains: settlement runs even if commitments fail
     // and vice versa. Each catches its own per-fixture errors internally.
     ctx.waitUntil(
-      withTxLine(env, async (config) => {
+      (async () => {
+        const entries = await getRegistry(env);
+        if (entries.length === 0) return;
         await Promise.allSettled([
-          runCommitments(env, config),
-          runSettlements(env, config),
+          runCommitments(env, entries),
+          entries.some((e) => !e.settled)
+            ? withTxLine(env, (config) => runSettlements(env, config, entries))
+            : Promise.resolve(),
         ]);
-      }),
+      })(),
     );
   },
 };

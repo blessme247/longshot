@@ -11,6 +11,7 @@ import { linkedGuestIds } from "./auth";
 import type { Env } from "./env";
 import { getFixtureById } from "./fixtures";
 import { isValidIdentity } from "./identity";
+import { registerFixture } from "./registry";
 import { settlementKey, type SettlementRecord } from "./settle";
 import { deriveStatus, pointsFor, type PickStatus } from "./status";
 
@@ -111,6 +112,11 @@ export async function upsertPick(
     env.PICKS.put(pickKey(identity, fixtureId), json),
     env.PICKS.put(pickIndexKey(fixtureId, identity), json),
   ]);
+  // Real picks enroll their fixture in the cron registry (zero-list cron
+  // design); replays never need commitment or settlement.
+  if (!demo) {
+    await registerFixture(env, fixtureId, fixture.StartTime);
+  }
   return { pick };
 }
 

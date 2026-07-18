@@ -62,7 +62,21 @@ async function toApiFixture(
   };
 }
 
+// Per-isolate response cache: UI polls every 15s from every client, and
+// fixture/odds data doesn't change faster than this.
+const FIXTURES_CACHE_TTL_MS = 10_000;
+let fixturesCache: { data: ApiFixture[]; at: number } | null = null;
+
 export async function listFixtures(config: TxLineConfig): Promise<ApiFixture[]> {
+  if (fixturesCache && Date.now() - fixturesCache.at < FIXTURES_CACHE_TTL_MS) {
+    return fixturesCache.data;
+  }
+  const data = await listFixturesUncached(config);
+  fixturesCache = { data, at: Date.now() };
+  return data;
+}
+
+async function listFixturesUncached(config: TxLineConfig): Promise<ApiFixture[]> {
   const fixtures = await getFixturesSnapshot(config, {
     competitionId: WORLD_CUP_COMPETITION_ID,
     startEpochDay: WORLD_CUP_START_EPOCH_DAY,
