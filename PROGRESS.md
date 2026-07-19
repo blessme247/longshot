@@ -2,6 +2,22 @@
 
 Terse changelog, newest first. One entry per meaningful change: what, why, decisions/tradeoffs.
 
+## 2026-07-19 — SECURITY: GitGuardian flag on b197835 (secret-LOGGING, no value leaked)
+
+**What was flagged vs. what actually leaked.** GitGuardian flagged commit b197835 (activate.mjs). A full-history audit (`git log -p --all` grep for the real token values, the ops-keypair secret-key bytes, JWTs, and inline secret assignments) found **no secret VALUE anywhere in history**: the mainnet/devnet TxLINE tokens (0 occurrences), the ops keypair secret bytes (0 — `ops-keypair.json` was gitignored from the first commit and never tracked), `.dev.vars` (never committed), session/admin secrets (only ever `wrangler secret`s). What the commit actually contained was **credential-logging code** — `console.log(\`TXLINE_API_TOKEN=${apiToken}\`)` and `console.log("Raw body:", rawBody)` (the activation response carries the token). Those print a secret at runtime but the literal value was never committed. So the flag was a logging pattern, not an exposed credential.
+
+**Exposure window:** b197835 authored 2026-07-17 12:22 UTC → history rewrite 2026-07-19 ~14:18 UTC. During that window the *scripts that log a token* were public; no token *value* was. The tokens were printed to our working terminal (private), not the repo.
+
+**Rotation (item 2):**
+- **Ops keypair:** secret never in git (only the public key was ever logged) → NOT rotated; subscription preserved (per the "public key ≠ secret" rule).
+- **Session HMAC key:** rotated to a fresh value during the earlier longshot cutover → existing sessions already invalidated (users re-sign once).
+- **Admin token:** freshly generated this session; never in git.
+- **TxLINE apiToken:** not in git; only terminal-exposed. Rotating it needs a new on-chain `subscribe` tx (SOL) + a live feed-secret swap. **Deferred to after the final** (user decision) to avoid touching the data feed during the 19:00 UTC hero window — re-run `activate.mjs --yes` on the ops wallet afterward and `wrangler secret put TXLINE_API_TOKEN`. Note: re-activation issues a NEW token; whether TxLINE invalidates the old one on re-subscribe is unconfirmed — assume it does not, so treat the old one as live until TxODDS is asked.
+
+**History rewrite (item 3):** `git filter-repo --replace-text` scrubbed the logging substrings from all historical blobs (the current tip already had them removed), force-pushed to `main`. Verification via a **fresh clone**: 0 real-token, 0 keypair-byte, 0 token-logging-pattern, 0 `txoracle_api_` occurrences across full history; `ops-keypair.json` never present. Backup bundle kept at `/tmp/longshot-backup-*.bundle`.
+
+**Recurrence guard (item 4):** removed every credential `console.log` from the scripts (activate/reactivate now write the token to a gitignored `.last-api-token` instead of printing it; public-key logging kept as non-secret); `.gitignore` extended (`.last-api-token`, `*.pem`); added `scripts/secret-scan.sh` wired as a `pre-commit` hook that blocks staged content matching live-credential patterns (TxLINE token, JWT, PEM, 32-byte key arrays, inline secret assignments) — self-tested to catch a real token pattern. CLAUDE.md's "no prod logging of secrets" now has teeth.
+
 ## 2026-07-18 — INCIDENT: France v England mis-settled as 0-0 draw (real result 4-6, England won)
 
 **Impact:** the fixture ended France 4–6 England (away win) in regulation. Our system displayed 0-0 the whole match and settled DRAW as the winning outcome, crediting ~425–427 pts to draw-pickers. For a product whose entire pitch is trustworthy settlement, this is the worst-case failure. No smoothing below.
