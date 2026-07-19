@@ -68,5 +68,5 @@ console.log("Fixtures snapshot status:", verifyRes.status);
 console.log("Fixtures snapshot body (first 500 chars):", verifyBody.slice(0, 500));
 
 console.log("\nSet these in your worker/app env:");
-console.log(`***REMOVED***`);
-console.log(`***REMOVED***`);
+// console.log(`***REMOVED***`);
+// console.log(`***REMOVED***`);

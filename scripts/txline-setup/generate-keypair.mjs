@@ -14,6 +14,6 @@ if (fs.existsSync(OUT_PATH)) {
 const keypair = Keypair.generate();
 fs.writeFileSync(OUT_PATH, JSON.stringify(Array.from(keypair.secretKey)));
 
-console.log("Ops keypair generated.");
-console.log("Public key (fund this address with mainnet SOL):", keypair.publicKey.toBase58());
-console.log("Secret key saved to:", OUT_PATH);
+// console.log("Ops keypair generated.");
+// console.log("Public key (fund this address with mainnet SOL):", keypair.publicKey.toBase58());
+// console.log("Secret key saved to:", OUT_PATH);

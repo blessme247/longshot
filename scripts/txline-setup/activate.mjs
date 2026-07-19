@@ -225,6 +225,6 @@ const verifyRes = await fetch(`${net.host}/api/fixtures/snapshot`, {
 });
 console.log("Fixtures snapshot status:", verifyRes.status);
 
-console.log("\nSet these in your worker/app env:");
-console.log(`***REMOVED***`);
-console.log(`***REMOVED***`);
+// console.log("\nSet these in your worker/app env:");
+// console.log(`***REMOVED***`);
+// console.log(`***REMOVED***`);
