@@ -13,3 +13,6 @@ dist
 !.vscode/extensions.json
 scripts/txline-setup/ops-keypair.json
 *keypair*.json
+scripts/txline-setup/.last-api-token
+*.pem
+.last-api-token

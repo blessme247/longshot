@@ -14,6 +14,7 @@ if (fs.existsSync(OUT_PATH)) {
 const keypair = Keypair.generate();
 fs.writeFileSync(OUT_PATH, JSON.stringify(Array.from(keypair.secretKey)));
 
-// console.log("Ops keypair generated.");
-// console.log("Public key (fund this address with mainnet SOL):", keypair.publicKey.toBase58());
-// console.log("Secret key saved to:", OUT_PATH);
+// Public key is safe to print (it is not a credential) and is needed to fund
+// the wallet. The secret key is only ever written to the gitignored file.
+console.log("Ops keypair generated.");
+console.log("Public key (fund this address):", keypair.publicKey.toBase58());

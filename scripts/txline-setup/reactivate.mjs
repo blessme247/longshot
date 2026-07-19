@@ -42,10 +42,11 @@ const res = await fetch(`${host}/api/token/activate`, {
 
 const rawBody = await res.text();
 console.log("Status:", res.status);
-console.log("Content-Type:", res.headers.get("content-type"));
-console.log(***REMOVED***);
-
-if (!res.ok) process.exit(1);
+// Never log rawBody / apiToken — the activation response contains the secret.
+if (!res.ok) {
+  console.error("Activation failed. Re-run; do not paste the response anywhere.");
+  process.exit(1);
+}
 
 let apiToken;
 try {
@@ -63,10 +64,10 @@ console.log("\nVerifying with a fixtures pull...");
 const verifyRes = await fetch(`${host}/api/fixtures/snapshot`, {
   headers: { Authorization: `Bearer ${jwt}`, "X-Api-Token": apiToken },
 });
-const verifyBody = await verifyRes.text();
 console.log("Fixtures snapshot status:", verifyRes.status);
-console.log("Fixtures snapshot body (first 500 chars):", verifyBody.slice(0, 500));
 
-console.log("\nSet these in your worker/app env:");
-// console.log(`***REMOVED***`);
-// console.log(`***REMOVED***`);
+// The activated token is a secret: it is never printed. Write it straight to
+// the gitignored .dev.vars / wrangler secret from the calling shell instead.
+const fs = await import("node:fs");
+fs.writeFileSync(new URL("./.last-api-token", import.meta.url), apiToken);
+console.log("Activated. Token written to scripts/txline-setup/.last-api-token (gitignored).");

@@ -216,7 +216,8 @@ try {
   apiToken = rawActivationBody.trim();
 }
 if (!apiToken) {
-  throw new Error(`Unexpected activation response: ${rawActivationBody}`);
+  // Do not include the raw response — it may contain the token.
+  throw new Error("Unexpected activation response (token not found)");
 }
 
 console.log("\nActivated. Verifying with a fixtures pull...");
@@ -225,6 +226,7 @@ const verifyRes = await fetch(`${net.host}/api/fixtures/snapshot`, {
 });
 console.log("Fixtures snapshot status:", verifyRes.status);
 
-// console.log("\nSet these in your worker/app env:");
-// console.log(`***REMOVED***`);
-// console.log(`***REMOVED***`);
+// The token is a secret: never printed. Written to a gitignored file for the
+// calling shell to load into .dev.vars / `wrangler secret put`.
+fs.writeFileSync(new URL("./.last-api-token", import.meta.url), apiToken);
+console.log("Token written to scripts/txline-setup/.last-api-token (gitignored).");
