@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ScoreUpdate } from "@underdog/txline";
+import { finalResult, latestGoals, type GoalsState, type ScoreUpdate } from "@underdog/txline";
 
 import type { Pick } from "./picks";
 import type { SettlementRecord } from "./settle";
@@ -23,82 +23,76 @@ function realPick(overrides: Partial<Pick> = {}): Pick {
   };
 }
 
-function scoreUpdate(h1Home: number, h1Away: number): ScoreUpdate {
-  return {
-    FixtureId: 1,
-    GameState: "scheduled",
-    StartTime: KICKOFF,
-    CompetitionId: 72,
-    Participant1IsHome: true,
-    Action: "action_amend",
-    Id: 1,
-    Ts: KICKOFF,
-    Seq: 10,
-    StatusId: 4,
-    Type: "Soccer",
-    Score: {
-      Participant1: { Total: { Goals: h1Home } },
-      Participant2: { Total: { Goals: h1Away } },
-    },
-  };
+function goals(home: number, away: number): GoalsState {
+  return { homeGoals: home, awayGoals: away, seq: 1 };
 }
 
-function settlement(result: SettlementRecord["result"]): SettlementRecord {
-  return {
-    version: 1,
-    fixtureId: 1,
-    result,
-    homeGoals: result === "home" ? 2 : 0,
-    awayGoals: result === "away" ? 2 : 0,
-    settledAt: KICKOFF + 7_000_000,
-    forced: false,
-    creditedCount: 1,
-  };
+function settlement(result: SettlementRecord["result"], h = 0, a = 0): SettlementRecord {
+  return { version: 1, fixtureId: 1, result, homeGoals: h, awayGoals: a, settledAt: KICKOFF + 7_000_000, creditedCount: 1 };
 }
 
 describe("deriveStatus", () => {
-  it("pre-kickoff real pick with NO score data is locked, never busted (regression)", () => {
-    const derived = deriveStatus(realPick(), KICKOFF - 60_000, null, null);
-    expect(derived.status).toBe("locked");
-    expect(derived.homeGoals).toBeNull();
-    expect(derived.awayGoals).toBeNull();
+  it("pre-kickoff real pick with NO score is locked, never busted (regression)", () => {
+    const d = deriveStatus(realPick(), KICKOFF - 60_000, null, null);
+    expect(d.status).toBe("locked");
+    expect(d.homeGoals).toBeNull();
   });
 
-  it("pre-kickoff real pick ignores a metadata score record that reads as 0-0", () => {
-    // The bug: pre-match snapshots contain fixture metadata with no goals,
-    // which used to be read as a 0-0 draw and busted every non-draw pick.
-    const derived = deriveStatus(realPick(), KICKOFF - 60_000, scoreUpdate(0, 0), null);
-    expect(derived.status).toBe("locked");
+  it("LIVE pick with NO parsed score stays locked with null goals — never 0-0 (incident regression)", () => {
+    // The 2026-07-18 mis-settlement: absent score was read as 0-0. A live
+    // pick with no parsed score must be unknown, not a 0-0 draw verdict.
+    const d = deriveStatus(realPick({ outcome: "draw" }), KICKOFF + 60_000, null, null);
+    expect(d.status).toBe("locked");
+    expect(d.homeGoals).toBeNull();
+    expect(d.awayGoals).toBeNull();
   });
 
-  it("live pick with no score yet is provisional 0-0", () => {
-    const derived = deriveStatus(realPick({ outcome: "draw" }), KICKOFF + 60_000, null, null);
-    expect(derived.status).toBe("hitting");
-    expect(derived.homeGoals).toBe(0);
+  it("live pick flips on the real parsed score", () => {
+    expect(deriveStatus(realPick(), KICKOFF + 60_000, goals(1, 0), null).status).toBe("hitting");
+    expect(deriveStatus(realPick(), KICKOFF + 60_000, goals(0, 1), null).status).toBe("busted");
   });
 
-  it("live pick flips on the live score", () => {
-    const derived = deriveStatus(realPick(), KICKOFF + 60_000, scoreUpdate(1, 0), null);
-    expect(derived.status).toBe("hitting");
-    const busted = deriveStatus(realPick(), KICKOFF + 60_000, scoreUpdate(0, 1), null);
-    expect(busted.status).toBe("busted");
-  });
-
-  it("settled real pick is won/lost with credited points from the settlement record", () => {
-    const won = deriveStatus(realPick(), KICKOFF + 8_000_000, scoreUpdate(0, 9), settlement("home"));
+  it("settled real pick is won/lost from the settlement record only", () => {
+    const won = deriveStatus(realPick({ outcome: "away" }), KICKOFF + 8e6, null, settlement("away", 4, 6));
     expect(won.status).toBe("won");
     expect(won.creditedPoints).toBe(250);
-    expect(won.homeGoals).toBe(2);
-
-    const lost = deriveStatus(realPick(), KICKOFF + 8_000_000, null, settlement("away"));
+    expect(won.awayGoals).toBe(6);
+    const lost = deriveStatus(realPick({ outcome: "draw" }), KICKOFF + 8e6, null, settlement("away", 4, 6));
     expect(lost.status).toBe("lost");
     expect(lost.creditedPoints).toBe(0);
   });
+});
 
-  it("replay pick reveals would-have outcome and never settles", () => {
-    const pick = realPick({ demo: true });
-    const derived = deriveStatus(pick, KICKOFF + 8_000_000, scoreUpdate(2, 0), settlement("home"));
-    expect(derived.status).toBe("hitting");
-    expect(derived.creditedPoints).toBeNull();
+// --- settlement safety: no finalised result => no settlement ---
+function update(partial: Partial<ScoreUpdate>): ScoreUpdate {
+  return {
+    FixtureId: 1, GameState: "x", StartTime: KICKOFF, CompetitionId: 72,
+    Participant1IsHome: true, Action: "x", Id: 1, Ts: KICKOFF, Seq: 1,
+    StatusId: 4, Type: "Soccer", ...partial,
+  };
+}
+
+describe("finalResult / latestGoals (settlement + live safety)", () => {
+  it("returns null when there is no finalised (StatusId 100) record — a cron tick must NOT settle", () => {
+    const updates = [
+      update({ Seq: 9, Action: "weather", StatusId: 1 }), // pre-match, no Score
+      update({ Seq: 1189, Action: "goal", StatusId: 4, Score: { Participant1: { H1: {}, H2: { Goals: 4 } }, Participant2: { H1: { Goals: 4 }, H2: { Goals: 2 } } } }),
+      update({ Seq: 1192, Action: "status", StatusId: 5 }), // "ended" marker, no Score
+    ];
+    expect(finalResult(updates)).toBeNull();
+  });
+
+  it("parses the finalised record's 90-minute result (H1+H2), regardless of array order", () => {
+    const updates = [
+      update({ Seq: 1195, Action: "game_finalised", StatusId: 100, Score: { Participant1: { H1: { Corners: 2 }, H2: { Goals: 4 } }, Participant2: { H1: { Goals: 4 }, H2: { Goals: 2 } } } }),
+      update({ Seq: 9, Action: "weather", StatusId: 1 }), // unordered: pre-match record last
+    ];
+    expect(finalResult(updates)).toEqual({ homeGoals: 4, awayGoals: 6 });
+  });
+
+  it("latestGoals ignores score-less records and never returns 0-0 for missing data", () => {
+    expect(latestGoals([update({ Seq: 9, Action: "weather", StatusId: 1 })])).toBeNull();
+    expect(latestGoals([update({ Seq: 5, Score: { Participant1: { Total: { Goals: 1 } }, Participant2: { Total: { Goals: 2 } } } })]))
+      .toEqual({ homeGoals: 1, awayGoals: 2, seq: 5 });
   });
 });

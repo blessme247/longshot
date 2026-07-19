@@ -1,7 +1,7 @@
 import { issueNonce, linkGuest, verifySignIn } from "./auth";
 import { buildProofResponse, commitmentKey, runCommitments } from "./commit";
 import { getRegistry } from "./registry";
-import { leaderboard, runSettlements } from "./settle";
+import { leaderboard, resettleFixture, runSettlements } from "./settle";
 import type { Env } from "./env";
 import { getFixtureById, listFixtures } from "./fixtures";
 import { isGuestIdentity } from "./identity";
@@ -113,6 +113,27 @@ export default {
 
       if (request.method === "GET" && pathname === "/api/leaderboard") {
         return json(await leaderboard(env));
+      }
+
+      // Env-gated correction path (never public). Requires the ADMIN_TOKEN
+      // secret in the X-Admin-Token header.
+      if (request.method === "POST" && pathname === "/api/admin/resettle") {
+        const token = request.headers.get("X-Admin-Token");
+        if (!env.ADMIN_TOKEN || token !== env.ADMIN_TOKEN) {
+          return json({ error: "forbidden" }, 403);
+        }
+        const body = await request
+          .json<{ fixtureId?: number }>()
+          .catch(() => ({}) as { fixtureId?: number });
+        const fixtureId = body.fixtureId;
+        if (!Number.isInteger(fixtureId)) {
+          return json({ error: "fixtureId required" }, 400);
+        }
+        const result = await withTxLine(env, (config) =>
+          resettleFixture(env, config, fixtureId as number),
+        );
+        if ("error" in result) return json({ error: result.error }, result.status);
+        return json(result);
       }
 
       if (request.method === "GET" && pathname.startsWith("/api/commitments/")) {

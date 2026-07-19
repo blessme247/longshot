@@ -2,7 +2,9 @@ import {
   fullTime1x2,
   getOddsSnapshot,
   getScoresSnapshot,
+  latestGoals,
   toMultipliers,
+  type GoalsState,
   type Outcome,
   type TxLineConfig,
 } from "@underdog/txline";
@@ -42,12 +44,33 @@ export function pickKey(identity: string, fixtureId: number): string {
   return `pick:${identity}:${fixtureId}`;
 }
 
-// Fixture-first index so the commitment job reads one prefix per fixture
-// instead of scanning every identity-first key (KV list is eventually
-// consistent; commit.ts explains the timing this pairs with). Written
-// synchronously with the pick in the same request.
+// Fixture-first index key, kept for backward compatibility / debugging.
 export function pickIndexKey(fixtureId: number, identity: string): string {
   return `pickf:${fixtureId}:${identity}`;
+}
+
+// Per-fixture roster: a single key holding the identity list for a fixture,
+// written on each real pick. Commitment, settlement and proof all read this
+// one key + scoped GETs — never a KV list (list has a tiny daily free-tier
+// quota; the 2026-07-18 mis-settlement and proof 500s both traced to lists).
+export function rosterKey(fixtureId: number): string {
+  return `roster:${fixtureId}`;
+}
+
+export async function addToRoster(env: Env, fixtureId: number, identity: string): Promise<void> {
+  const raw = await env.PICKS.get(rosterKey(fixtureId));
+  const ids: string[] = raw ? JSON.parse(raw) : [];
+  if (!ids.includes(identity)) {
+    ids.push(identity);
+    await env.PICKS.put(rosterKey(fixtureId), JSON.stringify(ids));
+  }
+}
+
+export async function rosterPicks(env: Env, fixtureId: number): Promise<Pick[]> {
+  const raw = await env.PICKS.get(rosterKey(fixtureId));
+  const ids: string[] = raw ? JSON.parse(raw) : [];
+  const raws = await Promise.all(ids.map((id) => env.PICKS.get(pickKey(id, fixtureId))));
+  return raws.filter((r): r is string => r !== null).map((r) => JSON.parse(r));
 }
 
 export async function upsertPick(
@@ -112,10 +135,11 @@ export async function upsertPick(
     env.PICKS.put(pickKey(identity, fixtureId), json),
     env.PICKS.put(pickIndexKey(fixtureId, identity), json),
   ]);
-  // Real picks enroll their fixture in the cron registry (zero-list cron
-  // design); replays never need commitment or settlement.
+  // Real picks enroll their fixture in the cron registry and the per-fixture
+  // roster (both zero-list); replays never need commitment or settlement.
   if (!demo) {
     await registerFixture(env, fixtureId, fixture.StartTime);
+    await addToRoster(env, fixtureId, identity);
   }
   return { pick };
 }
@@ -131,19 +155,21 @@ async function withStatus(env: Env, config: TxLineConfig, pick: Pick): Promise<A
 
   // Scores are only consulted for phases that need them: replays (final
   // score reveal) and live fixtures. Never pre-kickoff, never once settled.
-  let lastScore = null;
+  // latestGoals scans for the highest-Seq scored record — the snapshot is
+  // not chronologically ordered, so `.at(-1)` is wrong.
+  let latest: GoalsState | null = null;
   const needsScore = pick.demo || (now >= pick.kickoffAt && !settlement);
   if (needsScore) {
     try {
       const asOf = pick.demo ? pick.kickoffAt + 3 * 3600 * 1000 : undefined;
       const scores = await getScoresSnapshot(config, pick.fixtureId, asOf);
-      lastScore = scores.at(-1) ?? null;
+      latest = latestGoals(scores);
     } catch {
-      // Scores unavailable — deriveStatus treats it as no data.
+      // Scores unavailable — deriveStatus treats it as no data (not 0-0).
     }
   }
 
-  const derived = deriveStatus(pick, now, lastScore, settlement);
+  const derived = deriveStatus(pick, now, latest, settlement);
   const { settled: _settled, creditedPoints: _credited, ...base } = pick;
 
   return {

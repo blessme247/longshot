@@ -2,6 +2,33 @@
 
 Terse changelog, newest first. One entry per meaningful change: what, why, decisions/tradeoffs.
 
+## 2026-07-18 — INCIDENT: France v England mis-settled as 0-0 draw (real result 4-6, England won)
+
+**Impact:** the fixture ended France 4–6 England (away win) in regulation. Our system displayed 0-0 the whole match and settled DRAW as the winning outcome, crediting ~425–427 pts to draw-pickers. For a product whose entire pitch is trustworthy settlement, this is the worst-case failure. No smoothing below.
+
+**Timeline (UTC, reconstructed from the KV settlement record + the raw TxLINE scores snapshot; live `wrangler tail` only shows real-time so past ticks weren't retrievable, but the data sources are conclusive):**
+- 21:00:00 kickoff.
+- 23:01:30 TxLINE scores feed carries the 4–6 goals (Seq 1189, `Action: goal`).
+- 23:01:42 feed emits a `StatusId: 5` record (Seq 1192, `Action: status`) — my `matchEnded()` treated StatusId 5 as "ended", so the settlement gate opened. But those StatusId-5 records carry NO `Score`.
+- 23:02:02 **settlement ran and wrote the wrong record.** Earliest-settle was kickoff+105min (22:45); it fired on the first cron tick after StatusId 5 appeared. It read the scores via `getScoresSnapshot(...).at(-1)`.
+- 23:06:54 the authoritative `game_finalised` record (Seq 1195, `StatusId: 100`, Total 4–6) arrived — **4+ minutes AFTER we settled**.
+
+**Why it settled at all despite the earlier "quota-blocked until 00:00" report:** the list-free `/api/picks` hotfix deployed ~22:45 stopped the polling from draining the KV list quota, which freed enough headroom that settlement's single `realPicksFor` list succeeded at 23:02. So it ran ~4h earlier than my report assumed, and read bad data.
+
+**Root cause (two compounding bugs):**
+1. **`updates.at(-1)` assumed the scores snapshot is ordered newest-last. It is NOT.** The array's last element was a *pre-match* `Action: weather` record (Seq 9, Ts 20:33, `StatusId: 1`) with no `Score` field. The real score records (Seq 455–1195) sit earlier in the array. So both settlement (`goals90`) and live display (`currentGoals`) read a record with no `Score`.
+2. **A missing `Score` silently defaulted to 0-0** (`?? 0` on absent goal fields), turning "no data" into a valid-looking draw. Settlement then did `resultFromGoals(0,0) → "draw"` and credited it.
+3. Contributing: `matchEnded()` keyed on `StatusId === 5` (which carries no score and precedes finalisation) instead of the authoritative `StatusId === 100` / `game_finalised`; and there was no validation that the score actually parsed before settling.
+
+**The finalised record parses correctly** (France H1 0 + H2 4 = 4; England H1 4 + H2 2 = 6) — the H1+H2 math was fine; it was fed the wrong record.
+
+**Fixes shipped (worker deployed + verified; correction run on prod):**
+- **Score pipeline (item 2):** new `latestGoals()` (highest-Seq record that actually carries a Total score — never `.at(-1)`) and `finalResult()` (the `StatusId 100` finalised record only, 90-min = H1+H2, returns null unless it parses). Missing/unparseable score is `null` everywhere; the 0-0 default is gone. Unit-tested against the real incident payload (4-6 away) + the ordering/missing-data cases.
+- **Settlement safety rule (item 3):** settle ONLY from `finalResult`. No finalised record or unparseable → do not settle, log loudly, retry next tick. Removed the `StatusId 5` gate, the 4-hour force-settle, and every live-score fallback. Vitest: a tick with no finalised record must not settle.
+- **List-free sweep (item 5):** every path now reads a per-fixture `roster:{fixtureId}` key + scoped GETs. `grep -rn "\.list(" apps/worker/src packages/txline/src` → **zero matches.** This removes both the mis-settlement's premature-run enabler and the proof-endpoint 500s.
+- **Corrective re-settlement (item 4):** env-gated `POST /api/admin/resettle` (X-Admin-Token). Voided the draw record (kept as `settlement:18257865:voided:1784415722397`), re-settled to away 4-6 from the validated result, rebuilt board rows from the per-identity credited maps. Verified on prod: away pickers GpgSeA5M 419 / Cyt9EyK2 418 (won 1/1), draw & home pickers 0; the draw pick now reads `lost`. Pick records/committed leaves untouched — proofs unaffected.
+- **Presentation (item 6):** live picks with no parsed score show "score unavailable" (never 0-0); AHEAD/BEHIND now reflect the real `latestGoals` score; raw "internal error" is mapped to human copy with a retry on the fixtures error.
+
 ## 2026-07-18 — Live-match hotfix: /api/picks was 500ing (KV list quota), not stale cache
 
 Diagnosed during France v England via `wrangler tail`: `/api/picks` threw `KV list() limit exceeded for the day` in `picksForIdentity`. The free-tier 1,000/day **list** quota was exhausted by a day of per-request polling (each `/api/picks` did a KV list per identity). The "stale score" symptom was TanStack `keepPreviousData` masking the 500 with the last pre-kickoff payload. Fixes (read-path + UI only; settle.ts/commit.ts untouched, deployed to the existing underdog-* deployments):

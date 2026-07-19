@@ -1,24 +1,21 @@
 import {
+  finalResult,
   getScoresSnapshot,
   resultFromGoals,
   type Outcome,
-  type ScoreUpdate,
   type TxLineConfig,
 } from "@underdog/txline";
 
 import type { Env } from "./env";
-import { pickIndexKey, pickKey, type Pick } from "./picks";
+import { pickIndexKey, pickKey, rosterPicks, type Pick } from "./picks";
 import { updateRegistryEntry, type RegistryEntry } from "./registry";
 import { pointsFor } from "./status";
 
-// Settlement waits for the feed to mark the match ended (game phase 5) and
-// never reads a score before 90+ minutes have elapsed. Independent from the
-// commitment job: either can fail without affecting the other.
+// Don't even look before 90+ minutes have elapsed. Actual settlement waits
+// for TxLINE's validated finalised result (see finalResult); there is NO
+// time-based force-settle and NO fallback to live scores — no data, no
+// settlement. Independent failure domain from commitments.
 const EARLIEST_SETTLE_MS = 105 * 60 * 1000;
-// If the feed never emits the ended phase, settle on its last state after
-// this long — loudly, since it means trusting a stale final score.
-const FORCE_SETTLE_MS = 4 * 3600 * 1000;
-const GAME_PHASE_ENDED = 5;
 const BOARD_KEY = "board:v1";
 
 export interface SettlementRecord {
@@ -28,8 +25,10 @@ export interface SettlementRecord {
   homeGoals: number;
   awayGoals: number;
   settledAt: number;
-  forced: boolean;
   creditedCount: number;
+  // Set on a record that a correction superseded; kept in KV for audit.
+  voided?: boolean;
+  voidedReason?: string;
 }
 
 export interface LeaderboardRecord {
@@ -48,40 +47,8 @@ export function leaderboardKey(identity: string): string {
   return `lb:${identity}`;
 }
 
-// 90-minute result: sum the half buckets so extra time in knockout games
-// never leaks into the market (Total includes ET periods). Falls back to
-// Total only when the update has no half buckets at all.
-export function goals90(update: ScoreUpdate): { homeGoals: number; awayGoals: number } {
-  const p1 = update.Score?.Participant1;
-  const p2 = update.Score?.Participant2;
-
-  const hasHalves = Boolean(p1?.H1 ?? p1?.H2 ?? p2?.H1 ?? p2?.H2);
-  const p1Goals = hasHalves
-    ? (p1?.H1?.Goals ?? 0) + (p1?.H2?.Goals ?? 0)
-    : (p1?.Total?.Goals ?? 0);
-  const p2Goals = hasHalves
-    ? (p2?.H1?.Goals ?? 0) + (p2?.H2?.Goals ?? 0)
-    : (p2?.Total?.Goals ?? 0);
-
-  return update.Participant1IsHome
-    ? { homeGoals: p1Goals, awayGoals: p2Goals }
-    : { homeGoals: p2Goals, awayGoals: p1Goals };
-}
-
-function matchEnded(updates: ScoreUpdate[]): boolean {
-  return updates.some((u) => u.StatusId === GAME_PHASE_ENDED);
-}
-
 async function realPicksFor(env: Env, fixtureId: number): Promise<Pick[]> {
-  const listed = await env.PICKS.list({ prefix: `pickf:${fixtureId}:` });
-  const picks: Pick[] = [];
-  for (const key of listed.keys) {
-    const raw = await env.PICKS.get(key.name);
-    if (!raw) continue;
-    const pick: Pick = JSON.parse(raw);
-    if (!pick.demo) picks.push(pick);
-  }
-  return picks;
+  return (await rosterPicks(env, fixtureId)).filter((p) => !p.demo);
 }
 
 async function creditPick(env: Env, pick: Pick, result: Outcome): Promise<LeaderboardRecord> {
@@ -174,22 +141,20 @@ export async function runSettlements(
       }
 
       const updates = await getScoresSnapshot(config, fixtureId);
-      const last = updates.at(-1);
-      if (!last) {
-        console.error(`SETTLEMENT: fixture ${fixtureId} has no score data past due time`);
+
+      // The ONLY settlement source: TxLINE's validated finalised 90-minute
+      // result. If the fixture hasn't finalised, or the result doesn't parse
+      // into an unambiguous score, do not settle — log and retry next tick.
+      // No live-score fallback, no time-based force, no 0-0 default.
+      const final = finalResult(updates);
+      if (!final) {
+        console.error(
+          `SETTLEMENT: fixture ${fixtureId} not finalised / unparseable result — leaving unsettled, will retry`,
+        );
         continue;
       }
 
-      const ended = matchEnded(updates);
-      const forced = !ended && now >= entry.kickoffAt + FORCE_SETTLE_MS;
-      if (!ended && !forced) continue;
-      if (forced) {
-        console.error(
-          `SETTLEMENT: fixture ${fixtureId} never reported ended phase — force-settling on last known score`,
-        );
-      }
-
-      const { homeGoals, awayGoals } = goals90(last);
+      const { homeGoals, awayGoals } = final;
       const result = resultFromGoals(homeGoals, awayGoals);
 
       const picks = await realPicksFor(env, fixtureId);
@@ -209,7 +174,6 @@ export async function runSettlements(
         homeGoals,
         awayGoals,
         settledAt: now,
-        forced,
         creditedCount,
       };
       await env.PICKS.put(settlementKey(fixtureId), JSON.stringify(record));
@@ -221,6 +185,74 @@ export async function runSettlements(
       console.error(`SETTLEMENT FAILED for fixture ${fixtureId}:`, err);
     }
   }
+}
+
+// Guarded correction (item 4): void an incorrect settlement, re-settle from
+// the validated finalised result, and rebuild the affected leaderboard rows
+// from the per-identity credited maps. Idempotent — re-running with the same
+// result produces zero deltas. Env-gated at the router, never public. Pick
+// records and committed leaves are never touched, so proofs are unaffected.
+export async function resettleFixture(
+  env: Env,
+  config: TxLineConfig,
+  fixtureId: number,
+): Promise<{ result: Outcome; homeGoals: number; awayGoals: number; corrected: number } | { error: string; status: number }> {
+  const updates = await getScoresSnapshot(config, fixtureId);
+  const final = finalResult(updates);
+  if (!final) return { error: "fixture not finalised — cannot re-settle", status: 409 };
+  const result = resultFromGoals(final.homeGoals, final.awayGoals);
+
+  const oldRaw = await env.PICKS.get(settlementKey(fixtureId));
+  if (oldRaw) {
+    const old: SettlementRecord = JSON.parse(oldRaw);
+    if (!(old.result === result && old.homeGoals === final.homeGoals && old.awayGoals === final.awayGoals)) {
+      await env.PICKS.put(
+        `settlement:${fixtureId}:voided:${old.settledAt}`,
+        JSON.stringify({ ...old, voided: true, voidedReason: `superseded by correction to ${final.homeGoals}-${final.awayGoals} (${result})` }),
+      );
+    }
+  }
+
+  const picks = await realPicksFor(env, fixtureId);
+  const field = String(fixtureId);
+  const updatedRecords: LeaderboardRecord[] = [];
+  let creditedCount = 0;
+  for (const pick of picks) {
+    const key = leaderboardKey(pick.userId);
+    const raw = await env.PICKS.get(key);
+    const record: LeaderboardRecord = raw
+      ? JSON.parse(raw)
+      : { identity: pick.userId, points: 0, credited: {} };
+    const oldPoints = record.credited[field] ?? 0;
+    const newPoints = result === pick.outcome ? pointsFor(pick) : 0;
+    record.points += newPoints - oldPoints;
+    record.credited[field] = newPoints;
+    await env.PICKS.put(key, JSON.stringify(record));
+    updatedRecords.push(record);
+    if (newPoints > 0) creditedCount++;
+
+    // Correct the display flag on the pick record (leaf fields untouched).
+    const settledPick = { ...pick, settled: true, creditedPoints: newPoints };
+    const json = JSON.stringify(settledPick);
+    await env.PICKS.put(pickKey(pick.userId, fixtureId), json);
+    await env.PICKS.put(pickIndexKey(fixtureId, pick.userId), json);
+  }
+  await mergeBoard(env, updatedRecords);
+
+  const record: SettlementRecord = {
+    version: 1,
+    fixtureId,
+    result,
+    homeGoals: final.homeGoals,
+    awayGoals: final.awayGoals,
+    settledAt: Date.now(),
+    creditedCount,
+  };
+  await env.PICKS.put(settlementKey(fixtureId), JSON.stringify(record));
+  await updateRegistryEntry(env, fixtureId, { settled: true });
+  console.log(`RESETTLE: fixture ${fixtureId} corrected to ${final.homeGoals}-${final.awayGoals} (${result}), ${creditedCount} winners`);
+
+  return { result, homeGoals: final.homeGoals, awayGoals: final.awayGoals, corrected: picks.length };
 }
 
 export interface LeaderboardEntry {

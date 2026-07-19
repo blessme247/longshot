@@ -5,5 +5,6 @@ export interface Env {
   ALLOWED_ORIGINS: string;
   SESSION_SECRET: string;
   OPS_KEYPAIR_JSON: string;
+  ADMIN_TOKEN: string;
   PICKS: KVNamespace;
 }

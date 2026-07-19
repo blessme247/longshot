@@ -16,7 +16,7 @@ import {
 } from "@solana/web3.js";
 
 import type { Env } from "./env";
-import type { Pick } from "./picks";
+import { rosterPicks, type Pick } from "./picks";
 import { updateRegistryEntry, type RegistryEntry } from "./registry";
 
 // KV list is eventually consistent (writes can take ~60s to appear in list
@@ -66,15 +66,9 @@ export async function committablePicks(
   env: Env,
   fixture: { FixtureId: number; StartTime: number },
 ): Promise<Pick[]> {
-  const listed = await env.PICKS.list({ prefix: `pickf:${fixture.FixtureId}:` });
-  const picks: Pick[] = [];
-  for (const key of listed.keys) {
-    const raw = await env.PICKS.get(key.name);
-    if (!raw) continue;
-    const pick: Pick = JSON.parse(raw);
-    if (isCommittable(pick, fixture)) picks.push(pick);
-  }
-  return picks;
+  // Roster + scoped GETs — never a KV list (see picks.ts rosterKey).
+  const picks = await rosterPicks(env, fixture.FixtureId);
+  return picks.filter((p) => isCommittable(p, fixture));
 }
 
 async function sortedLeavesFor(picks: Pick[]): Promise<Uint8Array[]> {

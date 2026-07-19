@@ -33,6 +33,18 @@ function biggestPayout(fixtures: ApiFixture[], replay: boolean): Nudge | null {
   return best;
 }
 
+// Never surface raw server strings like "internal error" on a card.
+function friendlyError(message: string): string {
+  const m = message.toLowerCase();
+  if (m.includes("frozen")) return "This match has kicked off — picks are locked.";
+  if (m.includes("no odds")) return "Odds aren't open for this match yet. Try again shortly.";
+  if (m.includes("rate")) return "You're going a bit fast — give it a second and retry.";
+  if (m.includes("internal") || m.includes("failed") || m.includes("500")) {
+    return "Something went wrong locking that pick. Please try again.";
+  }
+  return message;
+}
+
 function SectionHeader({ title, tagline }: { title: string; tagline?: string }) {
   return (
     <div className="px-1 pt-2">
@@ -204,13 +216,19 @@ export function App() {
       {fixtures.isLoading &&
         [0, 1, 2, 3].map((i) => <PickCardSkeleton key={i} />)}
       {fixtures.isError && (
-        <p className="rounded-lg border border-loss-muted/40 bg-surface px-3 py-2.5 text-xs text-loss">
-          Could not load fixtures. Check your internet connectivity!
-        </p>
+        <div className="flex items-center justify-between gap-2 rounded-lg border border-loss-muted/40 bg-surface px-3 py-2.5 text-xs text-loss">
+          <span>Couldn't load matches. Check your connection.</span>
+          <button
+            onClick={() => fixtures.refetch()}
+            className="shrink-0 rounded border border-loss-muted/50 px-2 py-0.5 font-semibold uppercase tracking-widest"
+          >
+            Retry
+          </button>
+        </div>
       )}
       {lock.isError && (
         <p className="rounded-lg border border-loss-muted/40 bg-surface px-3 py-2.5 text-xs text-loss">
-          {(lock.error as Error).message}
+          {friendlyError((lock.error as Error).message)}
         </p>
       )}
 

@@ -23,6 +23,12 @@ const STATUS_LABEL: Record<ApiPick["status"], string> = {
 
 const isProvisional = (pick: ApiPick) => pick.status === "hitting" || pick.status === "busted";
 
+// A real pick whose fixture has kicked off but has no parsed score yet:
+// status stays "locked" with null goals. Shown as "score unavailable",
+// never as a 0-0 verdict.
+const isLiveUnknown = (pick: ApiPick) =>
+  !pick.demo && pick.status === "locked" && pick.kickoffAt <= Date.now();
+
 function statusStyle(pick: ApiPick): string {
   switch (pick.status) {
     case "won":
@@ -182,7 +188,13 @@ function PickRow({ pick }: { pick: ApiPick }) {
           )}
           {!pick.demo && (
             <div className="flex flex-col items-end gap-0.5">
-              <StatusChip pick={pick} />
+              {isLiveUnknown(pick) ? (
+                <span className="shrink-0 rounded bg-raised px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-widest text-ink-faint">
+                  Score unavailable
+                </span>
+              ) : (
+                <StatusChip pick={pick} />
+              )}
               {isProvisional(pick) && (
                 <span className="text-[9px] italic text-ink-faint">if it ends now</span>
               )}

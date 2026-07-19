@@ -1,5 +1,4 @@
-import { resultFromGoals, type Outcome, type ScoreUpdate } from "@underdog/txline";
-import { currentGoals } from "@underdog/txline";
+import { resultFromGoals, type GoalsState } from "@underdog/txline";
 
 import type { Pick } from "./picks";
 import type { SettlementRecord } from "./settle";
@@ -21,13 +20,16 @@ export function pointsFor(pick: Pick): number {
 
 /**
  * Phase is derived from kickoff time and settlement state — never from the
- * presence or absence of a score record. A missing score pre-match means
- * "locked", not 0-0.
+ * presence or absence of a score record. `latest` is the parsed running
+ * score or null when no score has been reported/parsed; a null score is
+ * "unknown" and never becomes 0-0. A live pick with an unknown score stays
+ * "locked" (the frontend renders it as "score unavailable", distinguished
+ * from a pre-kickoff lock by comparing kickoff to now).
  */
 export function deriveStatus(
   pick: Pick,
   now: number,
-  lastScore: ScoreUpdate | null,
+  latest: GoalsState | null,
   settlement: SettlementRecord | null,
 ): DerivedStatus {
   // Settled real picks: final verdict from the settlement record only.
@@ -41,32 +43,25 @@ export function deriveStatus(
     };
   }
 
-  // Replay picks always reference a finished match: reveal what would have
-  // happened (UI frames this as a reveal, not a verdict).
-  if (pick.demo) {
-    if (!lastScore) return { status: "hitting", homeGoals: null, awayGoals: null, creditedPoints: null };
-    const goals = currentGoals(lastScore);
-    const result: Outcome = resultFromGoals(goals.homeGoals, goals.awayGoals);
-    return {
-      status: result === pick.outcome ? "hitting" : "busted",
-      homeGoals: goals.homeGoals,
-      awayGoals: goals.awayGoals,
-      creditedPoints: null,
-    };
-  }
+  const unknown: DerivedStatus = {
+    status: "locked",
+    homeGoals: null,
+    awayGoals: null,
+    creditedPoints: null,
+  };
 
   // Real pick, fixture not kicked off: locked, no score, no verdict.
-  if (now < pick.kickoffAt) {
-    return { status: "locked", homeGoals: null, awayGoals: null, creditedPoints: null };
-  }
+  if (!pick.demo && now < pick.kickoffAt) return unknown;
 
-  // Live: provisional status from the live score; no score yet = 0-0.
-  const goals = lastScore ? currentGoals(lastScore) : { homeGoals: 0, awayGoals: 0 };
-  const provisional: Outcome = resultFromGoals(goals.homeGoals, goals.awayGoals);
+  // Replay reveal or live provisional both need a parsed score. Without one
+  // there is no verdict to show — stay "unknown", never assume 0-0.
+  if (!latest) return unknown;
+
+  const result = resultFromGoals(latest.homeGoals, latest.awayGoals);
   return {
-    status: provisional === pick.outcome ? "hitting" : "busted",
-    homeGoals: goals.homeGoals,
-    awayGoals: goals.awayGoals,
+    status: result === pick.outcome ? "hitting" : "busted",
+    homeGoals: latest.homeGoals,
+    awayGoals: latest.awayGoals,
     creditedPoints: null,
   };
 }
