@@ -29,6 +29,17 @@ Terse changelog, newest first. One entry per meaningful change: what, why, decis
 - **Corrective re-settlement (item 4):** env-gated `POST /api/admin/resettle` (X-Admin-Token). Voided the draw record (kept as `settlement:18257865:voided:1784415722397`), re-settled to away 4-6 from the validated result, rebuilt board rows from the per-identity credited maps. Verified on prod: away pickers GpgSeA5M 419 / Cyt9EyK2 418 (won 1/1), draw & home pickers 0; the draw pick now reads `lost`. Pick records/committed leaves untouched — proofs unaffected.
 - **Presentation (item 6):** live picks with no parsed score show "score unavailable" (never 0-0); AHEAD/BEHIND now reflect the real `latestGoals` score; raw "internal error" is mapped to human copy with a retry on the fixtures error.
 
+**Rename cutover (item 7) + acceptance (item 8) — deployed to `longshot-worker` / `longshot-web` (same KV namespace, so the correction persists; old `underdog-*` deployments deleted). Prod acceptance:**
+- Fixtures show real current data (the final, Spain v Argentina, present). ✓
+- Replay of the incident fixture now reveals the REAL 4-6 score (home pick → busted), not 0-0 — the exact bug, verified fixed end-to-end. ✓
+- The unplayed final has NO settlement record — an unfinalised fixture is not settled. ✓
+- Verify/proof works with no 500 (list-free via roster); rebuilt root `e4f6d740…` equals the committed root, so the roster backfill is provably complete. ✓
+- Board matches corrected reality (away pickers 419/418, others 0). ✓
+- `grep -rn "\.list(" apps/worker/src packages/txline/src` → zero. Deployed web bundle's only "underdog" hit is `underdog.pick.v1` (the permitted leaf prefix); title "Longshot", API → longshot-worker. ✓
+- **Not machine-verifiable — needs a browser before the final:** wallet connect → sign ("Longshot" prompt) → refresh stays signed in → disconnect re-signs. Session persistence fix is in, `SESSION_SECRET` rotated so existing sessions re-sign once.
+
+**KV budget for the final (root cause was the 1,000/day list quota):** steady-state **list ops = 0** in every code path — the quota that broke settlement and Verify is no longer touched at all. Reads (100k/day): `/api/fixtures` cached 10s/isolate; `/api/picks` does ~8 scoped GETs/call; cron ~1 GET/tick. Writes (1k/day): ~3-4 per pick, ~2N+2 per settlement — a demo's worth is low hundreds. The final's roster auto-populates on pick writes; no backfill needed.
+
 ## 2026-07-18 — Live-match hotfix: /api/picks was 500ing (KV list quota), not stale cache
 
 Diagnosed during France v England via `wrangler tail`: `/api/picks` threw `KV list() limit exceeded for the day` in `picksForIdentity`. The free-tier 1,000/day **list** quota was exhausted by a day of per-request polling (each `/api/picks` did a KV list per identity). The "stale score" symptom was TanStack `keepPreviousData` masking the 500 with the last pre-kickoff payload. Fixes (read-path + UI only; settle.ts/commit.ts untouched, deployed to the existing underdog-* deployments):
