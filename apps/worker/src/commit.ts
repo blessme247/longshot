@@ -83,11 +83,19 @@ export async function signatureLanded(
   connection: Connection,
   txSig: string,
 ): Promise<number | null> {
-  const status = await connection.getSignatureStatuses([txSig], {
-    searchTransactionHistory: true,
-  });
-  const value = status.value[0];
-  if (value && !value.err) return value.slot;
+  // The public RPC intermittently errors on this status check. A failure here
+  // must NOT abort the commit — the tx may well have landed. Return null so
+  // the caller records it as "sent" and a later run confirms it, rather than
+  // throwing (which previously killed the whole commit path).
+  try {
+    const status = await connection.getSignatureStatuses([txSig], {
+      searchTransactionHistory: true,
+    });
+    const value = status.value[0];
+    if (value && !value.err) return value.slot;
+  } catch (err) {
+    console.error(`signatureLanded: status check failed for ${txSig} (treating as unconfirmed):`, err);
+  }
   return null;
 }
 
@@ -124,6 +132,74 @@ async function sendRoot(
   tx.sign(keypair);
 
   return connection.sendRawTransaction(tx.serialize());
+}
+
+// Guarded manual commit for one fixture (admin-triggered when the cron did
+// not fire). Self-contained so it cannot disturb the scheduled path; returns
+// the exact failure instead of only logging it. Idempotent: a committed
+// fixture is reported as-is; a pending send is recovered by signature check.
+export async function commitFixtureNow(
+  env: Env,
+  fixture: { FixtureId: number; StartTime: number },
+): Promise<
+  | { status: "committed" | "sent"; root: string; txSig: string; slot: number; leafCount: number }
+  | { error: string; status: number }
+> {
+  const recordRaw = await env.PICKS.get(commitmentKey(fixture.FixtureId));
+  const existing: CommitmentRecord | null = recordRaw ? JSON.parse(recordRaw) : null;
+  if (existing?.status === "committed") {
+    await updateRegistryEntry(env, fixture.FixtureId, { committed: true });
+    return {
+      status: "committed",
+      root: existing.root,
+      txSig: existing.txSig ?? "",
+      slot: existing.slot ?? 0,
+      leafCount: existing.leafCount,
+    };
+  }
+
+  const picks = await committablePicks(env, fixture);
+  if (picks.length === 0) return { error: "no committable picks for fixture", status: 409 };
+
+  const root = toHex(await buildRoot(await sortedLeavesFor(picks)));
+  if (existing?.status === "pending" && existing.root !== root) {
+    return { error: `pending root mismatch (${existing.root} vs ${root})`, status: 409 };
+  }
+
+  const connection = new Connection(env.RPC_URL, "confirmed");
+  if (existing?.status === "pending" && existing.txSig) {
+    const landed = await signatureLanded(connection, existing.txSig);
+    if (landed !== null) {
+      const committed: CommitmentRecord = { ...existing, status: "committed", slot: landed };
+      await env.PICKS.put(commitmentKey(fixture.FixtureId), JSON.stringify(committed));
+      await updateRegistryEntry(env, fixture.FixtureId, { committed: true });
+      return { status: "committed", root, txSig: existing.txSig, slot: landed, leafCount: picks.length };
+    }
+  }
+
+  const pending: CommitmentRecord = {
+    version: 1,
+    fixtureId: fixture.FixtureId,
+    root,
+    leafCount: picks.length,
+    status: "pending",
+    committedAt: Date.now(),
+  };
+  await env.PICKS.put(commitmentKey(fixture.FixtureId), JSON.stringify(pending));
+
+  const txSig = await sendRoot(env, connection, fixture.FixtureId, root);
+  await env.PICKS.put(commitmentKey(fixture.FixtureId), JSON.stringify({ ...pending, txSig }));
+
+  const slot = await signatureLanded(connection, txSig);
+  if (slot !== null) {
+    await env.PICKS.put(
+      commitmentKey(fixture.FixtureId),
+      JSON.stringify({ ...pending, status: "committed", txSig, slot }),
+    );
+    await updateRegistryEntry(env, fixture.FixtureId, { committed: true });
+    return { status: "committed", root, txSig, slot, leafCount: picks.length };
+  }
+  return { status: "sent", root, txSig, slot: 0, leafCount: picks.length };
 }
 
 // Registry entries are the only work source: one KV GET upstream, no lists

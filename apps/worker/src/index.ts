@@ -1,5 +1,5 @@
 import { issueNonce, linkGuest, verifySignIn } from "./auth";
-import { buildProofResponse, commitmentKey, runCommitments } from "./commit";
+import { buildProofResponse, commitFixtureNow, commitmentKey, runCommitments } from "./commit";
 import { getRegistry } from "./registry";
 import { leaderboard, resettleFixture, runSettlements } from "./settle";
 import type { Env } from "./env";
@@ -134,6 +134,31 @@ export default {
         );
         if ("error" in result) return json({ error: result.error }, result.status);
         return json(result);
+      }
+
+      // Env-gated manual commitment (fire late if the cron missed a fixture).
+      if (request.method === "POST" && pathname === "/api/admin/commit") {
+        const token = request.headers.get("X-Admin-Token");
+        if (!env.ADMIN_TOKEN || token !== env.ADMIN_TOKEN) {
+          return json({ error: "forbidden" }, 403);
+        }
+        const body = await request
+          .json<{ fixtureId?: number }>()
+          .catch(() => ({}) as { fixtureId?: number });
+        const entry = (await getRegistry(env)).find((e) => e.fixtureId === body.fixtureId);
+        if (!entry) return json({ error: "fixture not in registry" }, 404);
+        try {
+          const result = await commitFixtureNow(env, {
+            FixtureId: entry.fixtureId,
+            StartTime: entry.kickoffAt,
+          });
+          if ("error" in result) return json({ error: result.error }, result.status);
+          return json(result);
+        } catch (err) {
+          // Surface the real exception to the admin caller (this path is the
+          // one the cron was silently failing on).
+          return json({ error: String(err), stack: (err as Error)?.stack?.slice(0, 800) }, 500);
+        }
       }
 
       if (request.method === "GET" && pathname.startsWith("/api/commitments/")) {
