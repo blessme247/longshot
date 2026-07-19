@@ -106,6 +106,9 @@ async function sendRoot(
     );
   }
 
+  // Kept aligned with the historical leaf prefix (see @underdog/commitment
+  // leaf.ts). Protocol identifier, not user-facing branding — stays stable
+  // through the Longshot rename so the on-chain memo scheme is consistent.
   const memo = `underdog:v1:${fixtureId}:${rootHex}`;
   const tx = new Transaction().add(
     new TransactionInstruction({

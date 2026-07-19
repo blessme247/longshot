@@ -1,5 +1,5 @@
 // Interim anonymous identity until wallet connect (day 2) replaces it.
-const KEY = "underdog:userId";
+const KEY = "longshot:userId";
 
 export function getUserId(): string {
   let id = localStorage.getItem(KEY);

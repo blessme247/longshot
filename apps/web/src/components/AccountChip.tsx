@@ -58,8 +58,20 @@ export function AccountChip({ onIdentityChange }: { onIdentityChange: () => void
 
   const { mutate: fireSignIn, reset: resetSignIn, isPending, isError } = signIn;
 
+  // The persisted session (localStorage HMAC token) is the source of truth
+  // for auth — it survives refresh and tab reopen independently of the
+  // wallet adapter's connection state, which starts !connected on every load
+  // before autoConnect resolves. We must NOT clear the session just because
+  // the adapter reports disconnected; only an explicit user action does that.
+  useEffect(() => {
+    if (!connected) {
+      attemptedFor.current = null;
+    }
+  }, [connected]);
+
   // Connect→sign is one continuous flow, gated strictly on a live, capable,
-  // signed-out adapter, at most once per pubkey per connection.
+  // signed-out adapter, at most once per pubkey per connection. Skips
+  // entirely when a session already exists (refresh path).
   useEffect(() => {
     if (
       connected &&
@@ -74,19 +86,16 @@ export function AccountChip({ onIdentityChange }: { onIdentityChange: () => void
     }
   }, [connected, publicKey, signMessage, isPending, fireSignIn]);
 
-  // Any disconnect (button or wallet-initiated) resets the machine to idle:
-  // session cleared, no error state, button back to "Connect wallet".
-  useEffect(() => {
-    if (!connected) {
-      attemptedFor.current = null;
-      resetSignIn();
-      if (getSession()) {
-        clearSession();
-        onIdentityChange();
-        void queryClient.invalidateQueries();
-      }
-    }
-  }, [connected, resetSignIn, onIdentityChange, queryClient]);
+  // Explicit sign-out only: clears the session, disconnects the wallet, and
+  // resets the sign-in machine to idle.
+  const handleDisconnect = () => {
+    clearSession();
+    resetSignIn();
+    attemptedFor.current = null;
+    void disconnect();
+    onIdentityChange();
+    void queryClient.invalidateQueries();
+  };
 
   const link = useMutation({
     mutationFn: () => linkGuest(getUserId()),
@@ -103,7 +112,7 @@ export function AccountChip({ onIdentityChange }: { onIdentityChange: () => void
   return (
     <div className="flex flex-col items-end gap-2">
       {session ? (
-        <button onClick={() => void disconnect()} className={cn(chipClass, "text-gold")}>
+        <button onClick={handleDisconnect} className={cn(chipClass, "text-gold")}>
           {truncateAddress(session.pubkey)}
         </button>
       ) : connected && publicKey ? (

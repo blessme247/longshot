@@ -1,6 +1,6 @@
-const TOKEN_KEY = "underdog:session";
-const PUBKEY_KEY = "underdog:pubkey";
-const LINK_OFFERED_KEY = "underdog:linkOffered";
+const TOKEN_KEY = "longshot:session";
+const PUBKEY_KEY = "longshot:pubkey";
+const LINK_OFFERED_KEY = "longshot:linkOffered";
 
 export function getSession(): { token: string; pubkey: string } | null {
   const token = localStorage.getItem(TOKEN_KEY);

@@ -173,10 +173,10 @@ export function App() {
       <header className="flex items-start justify-between px-1 pt-1">
         <div>
           <h1 className="font-condensed text-2xl font-bold uppercase tracking-wide">
-            Under<span className="text-gold">dog</span>
+            Long<span className="text-gold">shot</span>
           </h1>
           <p className="text-xs text-ink-muted">
-            Pick results, earn more when the underdog hits.
+            Pick results, earn more when the longshot lands.
           </p>
         </div>
         <AccountChip onIdentityChange={() => setIdentityEpoch((e) => e + 1)} />

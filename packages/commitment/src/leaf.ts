@@ -18,6 +18,11 @@ export interface PickLeaf {
   lockedAt: number;
 }
 
+// Historical prefix: the product was named "Underdog" when v1 launched and
+// the first on-chain commitments were published under this exact string.
+// It is a permanent part of every published leaf hash — the product rename
+// to Longshot does NOT touch it. A future leaf-encoding v2 will realign the
+// prefix; until then this stays "underdog.pick.v1" so existing proofs verify.
 const LEAF_PREFIX = "underdog.pick.v1";
 
 export function encodeLeaf(leaf: PickLeaf): Uint8Array {

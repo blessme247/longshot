@@ -7,12 +7,12 @@ import { readBoardRows, writeBoardRows } from "./settle";
 import { issueSession } from "./session";
 
 const NONCE_TTL_SECONDS = 300;
-const SIGN_IN_DOMAIN = "underdog-web.kamigo.workers.dev";
+const APP_NAME = "Longshot";
 
 // Fixed template — the server reconstructs this exact message for
 // verification, so a captured signature is only ever valid for one nonce.
 export function signInMessage(nonce: string): string {
-  return `${SIGN_IN_DOMAIN} wants you to sign in with your Solana account.\n\nThis signature proves you own this wallet. It is free and sends no transaction.\n\nNonce: ${nonce}`;
+  return `${APP_NAME} wants you to sign in with your Solana account.\n\nThis signature proves you own this wallet. It is free and sends no transaction.\n\nNonce: ${nonce}`;
 }
 
 export async function issueNonce(env: Env): Promise<{ nonce: string; message: string }> {
